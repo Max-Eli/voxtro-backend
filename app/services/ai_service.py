@@ -230,3 +230,65 @@ async def check_token_limits(chatbot_id: str, daily_limit: int, monthly_limit: i
     except Exception as e:
         logger.error(f"Token limit check error: {e}")
         return None  # Don't block on error
+
+
+async def extract_lead_info(messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+    """
+    Extract lead information from conversation messages using OpenAI
+
+    Args:
+        messages: List of conversation messages with role and content
+
+    Returns:
+        Dict with extracted lead info or None if no lead detected
+    """
+    try:
+        # Build conversation text
+        conversation_text = "\n".join([
+            f"{msg['role']}: {msg['content']}"
+            for msg in messages
+        ])
+
+        # Create extraction prompt
+        extraction_prompt = f"""
+        Analyze the following conversation and extract any lead information.
+        Look for: name, email, phone number, company name, and any relevant notes about their needs or interests.
+
+        Conversation:
+        {conversation_text}
+
+        Extract the information in JSON format with these fields:
+        - name: Full name if mentioned
+        - email: Email address if mentioned
+        - phone: Phone number if mentioned
+        - company: Company name if mentioned
+        - notes: Brief summary of their needs or interests
+
+        If no lead information is found, respond with: {{"no_lead": true}}
+
+        Respond ONLY with valid JSON, no additional text.
+        """
+
+        response = await call_openai(
+            messages=[{"role": "user", "content": extraction_prompt}],
+            model="gpt-4o-mini",
+            temperature=0.3,
+            max_tokens=500
+        )
+
+        # Parse the JSON response
+        import json
+        lead_data = json.loads(response["message"])
+
+        if lead_data.get("no_lead"):
+            return None
+
+        # Only return if we have at least one useful field
+        if lead_data.get("email") or lead_data.get("phone") or lead_data.get("name"):
+            return lead_data
+
+        return None
+
+    except Exception as e:
+        logger.error(f"Lead extraction error: {e}")
+        return None

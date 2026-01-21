@@ -102,3 +102,24 @@ async def get_whatsapp_agent(agent_id: str, auth_data: Dict = Depends(get_curren
     except Exception as e:
         logger.error(f"Get agent error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/validate-elevenlabs")
+async def validate_elevenlabs_connection(api_key: str, auth_data: Dict = Depends(get_current_user)):
+    """Validate ElevenLabs API key connection"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.elevenlabs.io/v1/user",
+                headers={"xi-api-key": api_key}
+            )
+
+            if response.status_code != 200:
+                return {"valid": False, "error": "Invalid API key"}
+
+            user_data = response.json()
+            return {"valid": True, "user": user_data}
+
+    except Exception as e:
+        logger.error(f"ElevenLabs validation error: {e}")
+        return {"valid": False, "error": str(e)}

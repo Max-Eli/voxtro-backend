@@ -65,3 +65,101 @@ async def create_support_ticket(ticket: SupportTicketCreate, auth_data: Dict = D
     except Exception as e:
         logger.error(f"Ticket creation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/send-login-link")
+async def send_customer_login_link(email: str):
+    """Send magic login link to customer"""
+    try:
+        # Generate magic link via Supabase auth
+        result = supabase_admin.auth.admin.generate_link({
+            "type": "magiclink",
+            "email": email,
+            "options": {
+                "redirect_to": "https://yourdomain.com/customer-portal"
+            }
+        })
+
+        # Send email with link (via notifications endpoint)
+        from app.models.notification import EmailNotification
+        from app.routers.notifications import send_email
+
+        email_data = EmailNotification(
+            to_email=email,
+            subject="Your Login Link - Voxtro Customer Portal",
+            html_content=f"""
+                <h2>Access Your Customer Portal</h2>
+                <p>Click the link below to log in to your customer portal:</p>
+                <p><a href="{result.properties.action_link}">Log In</a></p>
+                <p>This link expires in 1 hour.</p>
+            """,
+            from_name="Voxtro"
+        )
+
+        await send_email(email_data)
+
+        return {"success": True, "message": "Login link sent"}
+
+    except Exception as e:
+        logger.error(f"Send login link error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/extract-leads")
+async def extract_leads_from_conversations(auth_data: Dict = Depends(get_current_user)):
+    """Extract leads from customer conversations using AI"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get user's chatbots
+        chatbots_result = supabase_admin.table("chatbots").select("id").eq(
+            "user_id", user_id
+        ).execute()
+
+        chatbot_ids = [bot["id"] for bot in chatbots_result.data]
+
+        if not chatbot_ids:
+            return {"success": True, "leads_extracted": 0}
+
+        # Get unprocessed conversations
+        conversations_result = supabase_admin.table("conversations").select(
+            "id, chatbot_id"
+        ).in_("chatbot_id", chatbot_ids).eq("lead_extracted", False).limit(50).execute()
+
+        leads_extracted = 0
+
+        for conv in conversations_result.data:
+            # Get conversation messages
+            messages_result = supabase_admin.table("messages").select(
+                "content, role"
+            ).eq("conversation_id", conv["id"]).execute()
+
+            # Use OpenAI to extract lead information
+            from app.services.ai_service import extract_lead_info
+
+            lead_info = await extract_lead_info(messages_result.data)
+
+            if lead_info:
+                # Save lead
+                supabase_admin.table("leads").insert({
+                    "conversation_id": conv["id"],
+                    "chatbot_id": conv["chatbot_id"],
+                    "name": lead_info.get("name"),
+                    "email": lead_info.get("email"),
+                    "phone": lead_info.get("phone"),
+                    "company": lead_info.get("company"),
+                    "notes": lead_info.get("notes")
+                }).execute()
+
+                leads_extracted += 1
+
+            # Mark conversation as processed
+            supabase_admin.table("conversations").update({
+                "lead_extracted": True
+            }).eq("id", conv["id"]).execute()
+
+        return {"success": True, "leads_extracted": leads_extracted}
+
+    except Exception as e:
+        logger.error(f"Extract leads error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
