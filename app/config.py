@@ -14,8 +14,8 @@ class Settings(BaseSettings):
 
     # External APIs
     # NOTE: OpenAI API keys are now user-provided (multi-tenant)
-    # This is kept optional for backward compatibility
-    openai_api_key: str | None = None
+    # Server-side key used as fallback during migration period
+    openai_api_key: str
     resend_api_key: str
 
     # Application

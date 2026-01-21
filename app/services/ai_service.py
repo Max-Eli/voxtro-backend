@@ -12,34 +12,47 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-async def get_user_openai_key(user_id: str) -> str:
+async def get_user_openai_key(user_id: str, allow_fallback: bool = True) -> str:
     """
     Get user's OpenAI API key from openai_connections table
+    Falls back to server-side key if user hasn't configured their own
 
     Args:
         user_id: User's UUID
+        allow_fallback: If True, use server-side key as fallback for migration period
 
     Returns:
-        User's OpenAI API key
+        User's OpenAI API key or fallback server key
 
     Raises:
-        HTTPException: If no active API key found
+        HTTPException: If no active API key found and fallback disabled
     """
     try:
         result = supabase_admin.table('openai_connections').select('api_key').eq(
             'user_id', user_id
         ).eq('is_active', True).single().execute()
 
-        if not result.data or not result.data.get('api_key'):
-            raise HTTPException(
-                status_code=400,
-                detail="No OpenAI API key configured. Please add your API key in Settings."
-            )
+        if result.data and result.data.get('api_key'):
+            return result.data['api_key']
 
-        return result.data['api_key']
+        # User hasn't configured their key yet
+        if allow_fallback and settings.openai_api_key:
+            logger.info(f"Using fallback OpenAI key for user {user_id} (migration period)")
+            return settings.openai_api_key
+
+        raise HTTPException(
+            status_code=400,
+            detail="No OpenAI API key configured. Please add your API key in Settings."
+        )
+
     except HTTPException:
         raise
     except Exception as e:
+        # No user key found, try fallback
+        if allow_fallback and settings.openai_api_key:
+            logger.info(f"Using fallback OpenAI key for user {user_id} (migration period)")
+            return settings.openai_api_key
+
         logger.error(f"Error fetching OpenAI key for user {user_id}: {e}")
         raise HTTPException(
             status_code=400,
