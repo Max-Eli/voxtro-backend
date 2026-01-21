@@ -2,6 +2,7 @@
 import hashlib
 import httpx
 from typing import List, Dict, Any, Optional
+from fastapi import HTTPException
 from app.config import get_settings
 from app.database import supabase_admin
 from datetime import datetime, timedelta
@@ -9,6 +10,41 @@ import logging
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+async def get_user_openai_key(user_id: str) -> str:
+    """
+    Get user's OpenAI API key from openai_connections table
+
+    Args:
+        user_id: User's UUID
+
+    Returns:
+        User's OpenAI API key
+
+    Raises:
+        HTTPException: If no active API key found
+    """
+    try:
+        result = supabase_admin.table('openai_connections').select('api_key').eq(
+            'user_id', user_id
+        ).eq('is_active', True).single().execute()
+
+        if not result.data or not result.data.get('api_key'):
+            raise HTTPException(
+                status_code=400,
+                detail="No OpenAI API key configured. Please add your API key in Settings."
+            )
+
+        return result.data['api_key']
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching OpenAI key for user {user_id}: {e}")
+        raise HTTPException(
+            status_code=400,
+            detail="No OpenAI API key configured. Please add your API key in Settings."
+        )
 
 
 def estimate_tokens(text: str) -> int:
@@ -98,16 +134,18 @@ async def save_to_cache(chatbot_id: str, question: str, response: str, model: st
 
 async def call_openai(
     messages: List[Dict[str, str]],
+    api_key: str,
     model: str = "gpt-4o-mini",
     temperature: float = 0.7,
     max_tokens: int = 1000,
     tools: Optional[List[Dict]] = None
 ) -> Dict[str, Any]:
     """
-    Call OpenAI API
+    Call OpenAI API with user-provided API key
 
     Args:
         messages: List of message objects with role and content
+        api_key: User's OpenAI API key
         model: Model name
         temperature: Sampling temperature
         max_tokens: Max tokens to generate
@@ -132,7 +170,7 @@ async def call_openai(
             response = await client.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {settings.openai_api_key}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 },
                 json=payload
@@ -232,12 +270,13 @@ async def check_token_limits(chatbot_id: str, daily_limit: int, monthly_limit: i
         return None  # Don't block on error
 
 
-async def extract_lead_info(messages: List[Dict[str, str]]) -> Optional[Dict[str, Any]]:
+async def extract_lead_info(messages: List[Dict[str, str]], api_key: str) -> Optional[Dict[str, Any]]:
     """
     Extract lead information from conversation messages using OpenAI
 
     Args:
         messages: List of conversation messages with role and content
+        api_key: User's OpenAI API key
 
     Returns:
         Dict with extracted lead info or None if no lead detected
@@ -271,6 +310,7 @@ async def extract_lead_info(messages: List[Dict[str, str]]) -> Optional[Dict[str
 
         response = await call_openai(
             messages=[{"role": "user", "content": extraction_prompt}],
+            api_key=api_key,
             model="gpt-4o-mini",
             temperature=0.3,
             max_tokens=500

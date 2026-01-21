@@ -19,7 +19,8 @@ from app.services.ai_service import (
     save_to_cache,
     track_token_usage,
     check_token_limits,
-    estimate_tokens
+    estimate_tokens,
+    get_user_openai_key
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,13 @@ async def handle_chat_message(
             raise HTTPException(status_code=404, detail="Chatbot not found or inactive")
 
         chatbot = chatbot_result.data
+
+        # Get user's OpenAI API key
+        user_id = chatbot.get("user_id")
+        if not user_id:
+            raise HTTPException(status_code=500, detail="Chatbot configuration error")
+
+        openai_api_key = await get_user_openai_key(user_id)
 
         # Get chatbot actions
         actions_result = supabase_admin.table("chatbot_actions").select(
@@ -166,9 +174,10 @@ async def handle_chat_message(
                 for action in chatbot["actions"]
             ]
 
-        # Call OpenAI
+        # Call OpenAI with user's API key
         ai_response = await call_openai(
             messages=messages,
+            api_key=openai_api_key,
             model=chatbot.get("model", "gpt-4o-mini"),
             temperature=chatbot.get("temperature", 0.7),
             max_tokens=chatbot.get("max_tokens", 1000),

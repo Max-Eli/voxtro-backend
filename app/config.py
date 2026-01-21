@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     supabase_jwt_secret: str
 
     # External APIs
-    openai_api_key: str
+    # NOTE: OpenAI API keys are now user-provided (multi-tenant)
+    # This is kept optional for backward compatibility
+    openai_api_key: str | None = None
     resend_api_key: str
 
     # Application
