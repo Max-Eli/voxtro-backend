@@ -1,0 +1,40 @@
+services:
+  # Main API Service
+  - type: web
+    name: voxtro-backend
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: ENVIRONMENT
+        value: production
+
+  # Cron Jobs (optional - uncomment when ready)
+  # - type: cron
+  #   name: extract-leads-cron
+  #   env: python
+  #   schedule: "0 */6 * * *"
+  #   buildCommand: pip install -r requirements.txt
+  #   startCommand: python -m app.tasks.lead_extraction
+  #   envVars:
+  #     - key: SUPABASE_URL
+  #       sync: false
+  #     - key: SUPABASE_SERVICE_ROLE_KEY
+  #       sync: false
+  #     - key: OPENAI_API_KEY
+  #       sync: false
