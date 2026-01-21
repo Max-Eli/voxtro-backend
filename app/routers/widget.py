@@ -1,6 +1,6 @@
 """Widget endpoints - For embeddable chatbots"""
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JavaScriptResponse
+from fastapi.responses import Response
 import logging
 
 from app.models.widget import (
@@ -198,4 +198,4 @@ async def get_widget_script(chatbot_id: str):
 }})();
 """
 
-    return JavaScriptResponse(content=script)
+    return Response(content=script, media_type="application/javascript")
