@@ -9,6 +9,7 @@ class CustomerCreate(BaseModel):
     password: str = Field(..., min_length=6)
     full_name: str
     company_name: Optional[str] = None
+    chatbot_id: Optional[str] = None  # Link customer to specific chatbot/agent
 
 
 class CustomerCreateResponse(BaseModel):

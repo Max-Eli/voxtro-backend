@@ -13,33 +13,63 @@ router = APIRouter()
 
 @router.post("", response_model=CustomerCreateResponse)
 async def create_customer(customer: CustomerCreate, auth_data: Dict = Depends(get_current_user)):
-    """Create customer with auth user"""
+    """
+    Create customer with auth user and customer portal access
+    Optionally link to a specific chatbot/agent for the portal
+    """
     try:
-        # Create auth user via Supabase Admin API
+        business_owner_id = auth_data["user_id"]  # The business owner creating the customer
+
+        # Create auth user via Supabase Admin API for customer portal login
         auth_result = supabase_admin.auth.admin.create_user({
             "email": customer.email,
             "password": customer.password,
             "email_confirm": True,
-            "user_metadata": {"is_customer": True, "full_name": customer.full_name}
+            "user_metadata": {
+                "is_customer": True,
+                "full_name": customer.full_name,
+                "created_by_user_id": business_owner_id  # Link back to business owner
+            }
         })
 
-        user_id = auth_result.user.id
+        customer_user_id = auth_result.user.id
 
-        # Create customer profile
-        customer_result = supabase_admin.table("customers").insert({
+        # Create customer profile with optional chatbot link
+        customer_data = {
+            "user_id": customer_user_id,  # Link to auth user for portal login
             "email": customer.email,
             "full_name": customer.full_name,
-            "company_name": customer.company_name
-        }).execute()
+            "company_name": customer.company_name,
+            "created_by_user_id": business_owner_id  # Business owner who created this customer
+        }
+
+        # Add chatbot link if provided
+        if customer.chatbot_id:
+            # Verify the chatbot belongs to the business owner
+            chatbot_check = supabase_admin.table("chatbots").select("id").eq(
+                "id", customer.chatbot_id
+            ).eq("user_id", business_owner_id).single().execute()
+
+            if not chatbot_check.data:
+                raise HTTPException(status_code=404, detail="Chatbot not found or unauthorized")
+
+            customer_data["chatbot_id"] = customer.chatbot_id
+
+        customer_result = supabase_admin.table("customers").insert(customer_data).execute()
 
         customer_id = customer_result.data[0]["id"]
 
+        logger.info(f"Customer created: {customer_id} by user {business_owner_id}" +
+                   (f" linked to chatbot {customer.chatbot_id}" if customer.chatbot_id else ""))
+
         return CustomerCreateResponse(
             customer_id=customer_id,
-            user_id=user_id,
+            user_id=customer_user_id,
             email=customer.email
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Customer creation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
