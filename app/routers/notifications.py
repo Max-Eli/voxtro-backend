@@ -25,7 +25,7 @@ async def send_email(email: EmailNotification):
                     "Content-Type": "application/json"
                 },
                 json={
-                    "from": f"{email.from_name} <noreply@yourdomain.com>",
+                    "from": f"{email.from_name} <dev@voxtro.io>",
                     "to": [email.to_email],
                     "subject": email.subject,
                     "html": email.html_content
