@@ -33,6 +33,59 @@ async def get_widget_config(chatbot_id: str):
 
         chatbot = chatbot_result.data
 
+        # Handle multiple possible data structures for theme/colors
+        # Check for JSON theme/settings objects first
+        theme_obj = chatbot.get("theme") or chatbot.get("settings") or chatbot.get("widget_settings") or {}
+        if isinstance(theme_obj, str):
+            import json
+            try:
+                theme_obj = json.loads(theme_obj)
+            except:
+                theme_obj = {}
+
+        # Extract colors from various possible locations
+        primary_color = (
+            chatbot.get("primary_color") or 
+            chatbot.get("primaryColor") or 
+            theme_obj.get("primary_color") or 
+            theme_obj.get("primaryColor") or
+            theme_obj.get("color") or
+            "#6366f1"
+        )
+        secondary_color = (
+            chatbot.get("secondary_color") or 
+            chatbot.get("secondaryColor") or
+            theme_obj.get("secondary_color") or
+            theme_obj.get("secondaryColor") or
+            "#ffffff"
+        )
+        widget_position = (
+            chatbot.get("widget_position") or 
+            chatbot.get("widgetPosition") or
+            theme_obj.get("position") or
+            theme_obj.get("widget_position") or
+            "bottom-right"
+        )
+        avatar_url = (
+            chatbot.get("avatar_url") or 
+            chatbot.get("avatarUrl") or
+            chatbot.get("avatar") or
+            theme_obj.get("avatar_url") or
+            theme_obj.get("avatar")
+        )
+        first_message = (
+            chatbot.get("first_message") or 
+            chatbot.get("firstMessage") or
+            chatbot.get("greeting") or
+            chatbot.get("welcome_message")
+        )
+        placeholder_text = (
+            chatbot.get("placeholder_text") or 
+            chatbot.get("placeholderText") or
+            chatbot.get("placeholder") or
+            "Type your message..."
+        )
+
         # Get forms
         forms_result = supabase_admin.table("chatbot_forms").select(
             "*"
@@ -44,14 +97,6 @@ async def get_widget_config(chatbot_id: str):
         ).eq("chatbot_id", chatbot_id).eq("is_active", True).order(
             "sort_order"
         ).execute()
-
-        # Handle both snake_case and camelCase column names (for migrated data)
-        primary_color = chatbot.get("primary_color") or chatbot.get("primaryColor") or "#6366f1"
-        secondary_color = chatbot.get("secondary_color") or chatbot.get("secondaryColor") or "#ffffff"
-        widget_position = chatbot.get("widget_position") or chatbot.get("widgetPosition") or "bottom-right"
-        avatar_url = chatbot.get("avatar_url") or chatbot.get("avatarUrl")
-        first_message = chatbot.get("first_message") or chatbot.get("firstMessage")
-        placeholder_text = chatbot.get("placeholder_text") or chatbot.get("placeholderText") or "Type your message..."
 
         return WidgetConfig(
             chatbot_id=chatbot["id"],
