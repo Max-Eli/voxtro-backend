@@ -182,17 +182,47 @@ async def handle_chat_message(
         # Prepare tools if actions exist
         tools = None
         if chatbot["actions"]:
-            tools = [
-                {
+            tools = []
+            for action in chatbot["actions"]:
+                config = action.get("configuration", {})
+                params = config.get("parameters", {})
+                
+                # Convert array-style parameters to JSON Schema object
+                if isinstance(params, list):
+                    # Convert from [{name, type, required, description}, ...] to JSON Schema
+                    properties = {}
+                    required = []
+                    for param in params:
+                        param_name = param.get("name", "")
+                        param_type = param.get("type", "string")
+                        # Map common types to JSON Schema types
+                        type_map = {"text": "string", "number": "number", "boolean": "boolean", "integer": "integer"}
+                        json_type = type_map.get(param_type, "string")
+                        
+                        properties[param_name] = {
+                            "type": json_type,
+                            "description": param.get("description", "")
+                        }
+                        if param.get("required", False):
+                            required.append(param_name)
+                    
+                    params = {
+                        "type": "object",
+                        "properties": properties,
+                        "required": required
+                    }
+                elif not params:
+                    # Empty parameters - provide valid empty schema
+                    params = {"type": "object", "properties": {}}
+                
+                tools.append({
                     "type": "function",
                     "function": {
                         "name": action["name"],
-                        "description": action["description"],
-                        "parameters": action["configuration"].get("parameters", {})
+                        "description": action.get("description", ""),
+                        "parameters": params
                     }
-                }
-                for action in chatbot["actions"]
-            ]
+                })
 
         # Call OpenAI with user's API key
         ai_response = await call_openai(

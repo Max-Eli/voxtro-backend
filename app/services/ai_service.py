@@ -89,8 +89,8 @@ async def check_cache(chatbot_id: str, question: str) -> Optional[Dict[str, Any]
     try:
         question_hash = create_question_hash(question)
 
-        # Clean up expired cache entries
-        await supabase_admin.table("response_cache").delete().lt(
+        # Clean up expired cache entries (sync call, no await)
+        supabase_admin.table("response_cache").delete().lt(
             "expires_at", datetime.utcnow().isoformat()
         ).execute()
 
@@ -114,7 +114,7 @@ async def check_cache(chatbot_id: str, question: str) -> Optional[Dict[str, Any]
 
             logger.info(f"Cache hit for chatbot {chatbot_id}")
             return {
-                "message": cached["response"],
+                "message": cached["response_text"],
                 "cache_hit": True
             }
 
@@ -129,13 +129,17 @@ async def save_to_cache(chatbot_id: str, question: str, response: str, model: st
     try:
         question_hash = create_question_hash(question)
         expires_at = datetime.utcnow() + timedelta(hours=duration_hours)
+        input_tokens = estimate_tokens(question)
+        output_tokens = estimate_tokens(response)
 
         supabase_admin.table("response_cache").insert({
             "chatbot_id": chatbot_id,
             "question_hash": question_hash,
-            "question": question[:500],  # Truncate for storage
-            "response": response,
-            "model": model,
+            "question_text": question[:500],  # Truncate for storage
+            "response_text": response,
+            "model_used": model,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
             "expires_at": expires_at.isoformat(),
             "hit_count": 0
         }).execute()
@@ -224,9 +228,8 @@ async def track_token_usage(
             "conversation_id": conversation_id,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-            "model": model,
-            "cost": cost,
+            "model_used": model,
+            "total_cost": cost,
             "cache_hit": cache_hit
         }).execute()
 
