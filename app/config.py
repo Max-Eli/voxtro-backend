@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["*"]
     
     # Frontend URLs (for email links, redirects, etc.)
-    frontend_url: str = "https://voxtro.vercel.app"
+    frontend_url: str = "https://dev.voxtro.io"
     support_email: str = "support@voxtro.io"
 
     class Config:

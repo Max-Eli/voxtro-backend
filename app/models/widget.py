@@ -19,7 +19,6 @@ class WidgetConfig(BaseModel):
 
 class WidgetMessageRequest(BaseModel):
     """Widget message request (public, no auth)"""
-    chatbot_id: str
     visitor_id: str
     message: str
     conversation_id: Optional[str] = None

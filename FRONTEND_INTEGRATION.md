@@ -575,7 +575,7 @@ The backend widget script loads an **iframe** that points to your Vercel fronten
 
 Example URL:
 ```
-https://your-vercel-app.vercel.app/messenger/fff796d6-9883-40b2-9101-0a96012700b7
+https://dev.voxtro.io/messenger/fff796d6-9883-40b2-9101-0a96012700b7
 ```
 
 ### What this page should do:

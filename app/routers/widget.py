@@ -118,15 +118,10 @@ async def get_widget_script(chatbot_id: str):
     const API_URL = window.VOXTRO_API_URL || 'https://voxtro-backend.onrender.com';
     const FRONTEND_URL = window.VOXTRO_FRONTEND_URL || '{frontend_url}';
 
-    // Generate unique visitor ID
-    function getVisitorId() {{
-        let visitorId = localStorage.getItem('voxtro_visitor_id');
-        if (!visitorId) {{
-            visitorId = 'visitor_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-            localStorage.setItem('voxtro_visitor_id', visitorId);
-        }}
-        return visitorId;
-    }}
+    let isOpen = false;
+    let config = null;
+    let chatContainer = null;
+    let toggleButton = null;
 
     // Fetch widget configuration
     async function loadConfig() {{
@@ -140,58 +135,111 @@ async def get_widget_script(chatbot_id: str):
         }}
     }}
 
-    // Send message to chatbot
-    async function sendMessage(message, conversationId) {{
-        const response = await fetch(`${{API_URL}}/api/widget/${{CHATBOT_ID}}/message`, {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json' }},
-            body: JSON.stringify({{
-                chatbot_id: CHATBOT_ID,
-                visitor_id: getVisitorId(),
-                message: message,
-                conversation_id: conversationId
-            }})
-        }});
+    // Toggle chat open/close
+    function toggleChat() {{
+        isOpen = !isOpen;
+        if (chatContainer) {{
+            chatContainer.style.display = isOpen ? 'block' : 'none';
+        }}
+        if (toggleButton) {{
+            toggleButton.innerHTML = isOpen ? getCloseIcon() : getChatIcon();
+        }}
+    }}
 
-        if (!response.ok) throw new Error('Failed to send message');
-        return await response.json();
+    // Chat bubble icon SVG
+    function getChatIcon() {{
+        return `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>`;
+    }}
+
+    // Close icon SVG
+    function getCloseIcon() {{
+        return `<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
     }}
 
     // Create widget UI
     async function initWidget() {{
-        const config = await loadConfig();
+        config = await loadConfig();
         if (!config) return;
 
-        // Create widget container
-        const container = document.createElement('div');
-        container.id = 'voxtro-widget';
-        container.style.cssText = `
+        const primaryColor = config.primary_color || '#6366f1';
+        const position = config.widget_position || 'bottom-right';
+        const isRight = position.includes('right');
+
+        // Create main wrapper
+        const wrapper = document.createElement('div');
+        wrapper.id = 'voxtro-widget-wrapper';
+        wrapper.style.cssText = `
             position: fixed;
-            ${{config.widget_position.includes('right') ? 'right: 20px' : 'left: 20px'}};
+            ${{isRight ? 'right: 20px' : 'left: 20px'}};
             bottom: 20px;
-            width: 400px;
-            max-width: calc(100vw - 40px);
-            height: 600px;
-            max-height: calc(100vh - 100px);
             z-index: 999999;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         `;
 
+        // Create chat container (hidden by default)
+        chatContainer = document.createElement('div');
+        chatContainer.id = 'voxtro-chat-container';
+        chatContainer.style.cssText = `
+            display: none;
+            width: 400px;
+            max-width: calc(100vw - 40px);
+            height: 600px;
+            max-height: calc(100vh - 140px);
+            margin-bottom: 16px;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+        `;
+
         // Create iframe for widget content
         const iframe = document.createElement('iframe');
+        iframe.id = 'voxtro-chat-iframe';
         iframe.style.cssText = `
             width: 100%;
             height: 100%;
             border: none;
-            border-radius: 16px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.12);
         `;
-
-        // Set iframe src to messenger page on frontend
         iframe.src = `${{FRONTEND_URL}}/messenger/${{CHATBOT_ID}}`;
 
-        container.appendChild(iframe);
-        document.body.appendChild(container);
+        chatContainer.appendChild(iframe);
+
+        // Create toggle button
+        toggleButton = document.createElement('button');
+        toggleButton.id = 'voxtro-toggle-button';
+        toggleButton.innerHTML = getChatIcon();
+        toggleButton.style.cssText = `
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: none;
+            background: ${{primaryColor}};
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            ${{isRight ? 'margin-left: auto;' : ''}}
+        `;
+        toggleButton.onmouseenter = function() {{
+            this.style.transform = 'scale(1.1)';
+            this.style.boxShadow = '0 6px 20px rgba(0,0,0,0.25)';
+        }};
+        toggleButton.onmouseleave = function() {{
+            this.style.transform = 'scale(1)';
+            this.style.boxShadow = '0 4px 16px rgba(0,0,0,0.2)';
+        }};
+        toggleButton.onclick = toggleChat;
+
+        // Button container for alignment
+        const buttonContainer = document.createElement('div');
+        buttonContainer.style.cssText = `display: flex; justify-content: ${{isRight ? 'flex-end' : 'flex-start'}};`;
+        buttonContainer.appendChild(toggleButton);
+
+        wrapper.appendChild(chatContainer);
+        wrapper.appendChild(buttonContainer);
+        document.body.appendChild(wrapper);
     }}
 
     // Initialize when DOM is ready
