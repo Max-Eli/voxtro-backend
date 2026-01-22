@@ -106,12 +106,17 @@ async def get_widget_script(chatbot_id: str):
     Serve widget JavaScript file (PUBLIC endpoint)
     This is the embed script that customers add to their websites
     """
+    from app.config import get_settings
+    settings = get_settings()
+    frontend_url = settings.frontend_url
+    
     script = f"""
 (function() {{
     'use strict';
 
     const CHATBOT_ID = '{chatbot_id}';
     const API_URL = window.VOXTRO_API_URL || 'https://voxtro-backend.onrender.com';
+    const FRONTEND_URL = window.VOXTRO_FRONTEND_URL || '{frontend_url}';
 
     // Generate unique visitor ID
     function getVisitorId() {{
@@ -182,8 +187,8 @@ async def get_widget_script(chatbot_id: str):
             box-shadow: 0 8px 32px rgba(0,0,0,0.12);
         `;
 
-        // Set iframe src to your messenger page
-        iframe.src = `${{window.location.origin}}/messenger/${{CHATBOT_ID}}`;
+        // Set iframe src to messenger page on frontend
+        iframe.src = `${{FRONTEND_URL}}/messenger/${{CHATBOT_ID}}`;
 
         container.appendChild(iframe);
         document.body.appendChild(container);

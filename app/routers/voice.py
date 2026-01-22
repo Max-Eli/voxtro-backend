@@ -166,3 +166,166 @@ async def get_vapi_web_token(auth_data: Dict = Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Token error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/calls")
+async def get_voice_calls(
+    assistant_id: str = None,
+    limit: int = 50,
+    auth_data: Dict = Depends(get_current_user)
+):
+    """Get voice call history with summaries"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get user's assistants
+        if assistant_id:
+            # Verify ownership
+            assistant_check = supabase_admin.table("voice_assistants").select("id").eq(
+                "id", assistant_id
+            ).eq("user_id", user_id).single().execute()
+            
+            if not assistant_check.data:
+                raise HTTPException(status_code=403, detail="Assistant not found or access denied")
+            
+            assistant_ids = [assistant_id]
+        else:
+            assistants_result = supabase_admin.table("voice_assistants").select("id").eq(
+                "user_id", user_id
+            ).execute()
+            assistant_ids = [a["id"] for a in (assistants_result.data or [])]
+
+        if not assistant_ids:
+            return {"calls": []}
+
+        # Get calls with all data
+        calls_result = supabase_admin.table("voice_assistant_calls").select(
+            "id, assistant_id, customer_id, status, started_at, ended_at, duration_seconds, cost, "
+            "summary, key_points, action_items, sentiment, sentiment_notes, call_outcome, topics_discussed, lead_info"
+        ).in_("assistant_id", assistant_ids).order("started_at", desc=True).limit(limit).execute()
+
+        return {"calls": calls_result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get calls error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/calls/{call_id}")
+async def get_call_details(
+    call_id: str,
+    auth_data: Dict = Depends(get_current_user)
+):
+    """Get detailed call information including transcript and summary"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get call
+        call_result = supabase_admin.table("voice_assistant_calls").select("*").eq(
+            "id", call_id
+        ).single().execute()
+
+        if not call_result.data:
+            raise HTTPException(status_code=404, detail="Call not found")
+
+        # Verify ownership via assistant
+        assistant_result = supabase_admin.table("voice_assistants").select("user_id").eq(
+            "id", call_result.data["assistant_id"]
+        ).single().execute()
+
+        if not assistant_result.data or assistant_result.data["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Get transcript
+        transcript_result = supabase_admin.table("voice_assistant_transcripts").select(
+            "role, content, timestamp"
+        ).eq("call_id", call_id).order("timestamp").execute()
+
+        # Get recording
+        recording_result = supabase_admin.table("voice_assistant_recordings").select(
+            "recording_url"
+        ).eq("call_id", call_id).single().execute()
+
+        return {
+            "call": call_result.data,
+            "transcript": transcript_result.data or [],
+            "recording_url": recording_result.data.get("recording_url") if recording_result.data else None
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get call details error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/calls/{call_id}/summarize")
+async def summarize_call(
+    call_id: str,
+    auth_data: Dict = Depends(get_current_user)
+):
+    """Generate or regenerate AI summary for a call"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get call
+        call_result = supabase_admin.table("voice_assistant_calls").select(
+            "id, assistant_id"
+        ).eq("id", call_id).single().execute()
+
+        if not call_result.data:
+            raise HTTPException(status_code=404, detail="Call not found")
+
+        # Verify ownership via assistant
+        assistant_result = supabase_admin.table("voice_assistants").select("user_id").eq(
+            "id", call_result.data["assistant_id"]
+        ).single().execute()
+
+        if not assistant_result.data or assistant_result.data["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Get transcript
+        transcript_result = supabase_admin.table("voice_assistant_transcripts").select(
+            "role, content"
+        ).eq("call_id", call_id).order("timestamp").execute()
+
+        if not transcript_result.data:
+            raise HTTPException(status_code=400, detail="No transcript available for this call")
+
+        # Build transcript text
+        transcript_text = "\n".join([
+            f"{msg['role']}: {msg['content']}"
+            for msg in transcript_result.data
+        ])
+
+        # Generate summary
+        from app.routers.webhooks import generate_call_summary
+        summary = await generate_call_summary(call_id, transcript_text, user_id)
+
+        if not summary:
+            raise HTTPException(status_code=500, detail="Failed to generate summary")
+
+        # Save summary
+        supabase_admin.table("voice_assistant_calls").update({
+            "summary": summary.get("summary"),
+            "key_points": summary.get("key_points"),
+            "action_items": summary.get("action_items"),
+            "sentiment": summary.get("sentiment"),
+            "sentiment_notes": summary.get("sentiment_notes"),
+            "call_outcome": summary.get("call_outcome"),
+            "topics_discussed": summary.get("topics_discussed"),
+            "lead_info": summary.get("lead_info")
+        }).eq("id", call_id).execute()
+
+        return {
+            "success": True,
+            "summary": summary
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Summarize call error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
