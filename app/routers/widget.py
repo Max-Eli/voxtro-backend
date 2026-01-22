@@ -45,22 +45,30 @@ async def get_widget_config(chatbot_id: str):
             "sort_order"
         ).execute()
 
+        # Handle both snake_case and camelCase column names (for migrated data)
+        primary_color = chatbot.get("primary_color") or chatbot.get("primaryColor") or "#6366f1"
+        secondary_color = chatbot.get("secondary_color") or chatbot.get("secondaryColor") or "#ffffff"
+        widget_position = chatbot.get("widget_position") or chatbot.get("widgetPosition") or "bottom-right"
+        avatar_url = chatbot.get("avatar_url") or chatbot.get("avatarUrl")
+        first_message = chatbot.get("first_message") or chatbot.get("firstMessage")
+        placeholder_text = chatbot.get("placeholder_text") or chatbot.get("placeholderText") or "Type your message..."
+
         return WidgetConfig(
             chatbot_id=chatbot["id"],
             name=chatbot.get("name", "Assistant"),
             theme={
-                "primary_color": chatbot.get("primary_color"),
-                "secondary_color": chatbot.get("secondary_color"),
-                "position": chatbot.get("widget_position", "bottom-right"),
-                "avatar": chatbot.get("avatar_url")
+                "primary_color": primary_color,
+                "secondary_color": secondary_color,
+                "position": widget_position,
+                "avatar": avatar_url
             },
-            first_message=chatbot.get("first_message"),
-            placeholder_text=chatbot.get("placeholder_text", "Type your message..."),
+            first_message=first_message,
+            placeholder_text=placeholder_text,
             forms=forms_result.data or [],
             faqs=faqs_result.data or [],
-            widget_position=chatbot.get("widget_position", "bottom-right"),
-            primary_color=chatbot.get("primary_color"),
-            secondary_color=chatbot.get("secondary_color")
+            widget_position=widget_position,
+            primary_color=primary_color,
+            secondary_color=secondary_color
         )
 
     except HTTPException:
