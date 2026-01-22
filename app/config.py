@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Application
     environment: str = "development"
     cors_origins: list[str] = ["*"]
+    
+    # Frontend URLs (for email links, redirects, etc.)
+    frontend_url: str = "https://voxtro.vercel.app"
+    support_email: str = "support@voxtro.io"
 
     class Config:
         env_file = ".env"

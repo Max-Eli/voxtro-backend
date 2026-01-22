@@ -37,9 +37,9 @@ async def handle_chat_message(
     Replaces: chat, inline-chat, messenger edge functions
     """
     try:
-        # Get chatbot configuration
+        # Get chatbot configuration including knowledge base
         chatbot_query = supabase_admin.table("chatbots").select(
-            "*, daily_token_limit, monthly_token_limit, cache_enabled, cache_duration_hours"
+            "*, daily_token_limit, monthly_token_limit, cache_enabled, cache_duration_hours, knowledge_base"
         ).eq("id", request.chatbot_id)
 
         if not request.preview_mode:
@@ -148,9 +148,29 @@ async def handle_chat_message(
                 for msg in (history_result.data or [])
             ]
 
+        # Build system prompt with knowledge base if available
+        system_prompt = chatbot.get("system_prompt", "You are a helpful assistant.")
+        
+        # Add knowledge base content to system prompt if available
+        knowledge_base = chatbot.get("knowledge_base")
+        if knowledge_base:
+            system_prompt += f"\n\n### Knowledge Base (Use this information to answer questions):\n{knowledge_base[:8000]}"  # Limit to avoid token overflow
+
+        # Add FAQs to context if available
+        faqs_result = supabase_admin.table("chatbot_faqs").select(
+            "question, answer"
+        ).eq("chatbot_id", request.chatbot_id).eq("is_active", True).limit(20).execute()
+        
+        if faqs_result.data:
+            faq_text = "\n".join([
+                f"Q: {faq['question']}\nA: {faq['answer']}"
+                for faq in faqs_result.data
+            ])
+            system_prompt += f"\n\n### Frequently Asked Questions:\n{faq_text}"
+
         # Prepare messages for OpenAI
         messages = [
-            {"role": "system", "content": chatbot.get("system_prompt", "You are a helpful assistant.")}
+            {"role": "system", "content": system_prompt}
         ]
 
         # Add conversation history or just current message
@@ -238,6 +258,18 @@ async def crawl_website(
     Replaces: crawl-website edge function
     """
     try:
+        # Verify chatbot ownership if authenticated
+        if auth_data:
+            chatbot_check = supabase_admin.table("chatbots").select("id, user_id").eq(
+                "id", request.chatbot_id
+            ).single().execute()
+            
+            if not chatbot_check.data:
+                raise HTTPException(status_code=404, detail="Chatbot not found")
+            
+            if chatbot_check.data.get("user_id") != auth_data.get("user_id"):
+                raise HTTPException(status_code=403, detail="Access denied")
+
         # Import crawler service
         from app.services.crawler_service import crawl_and_extract
 
@@ -246,8 +278,27 @@ async def crawl_website(
             max_pages=request.max_pages
         )
 
-        # Save crawled content to chatbot (you'd store this in a knowledge base table)
-        # For now, just return success
+        # Save crawled content to chatbot's knowledge base
+        crawled_content = result.get("content", "")
+        
+        # Update chatbot with new knowledge base content
+        # Append to existing knowledge base if it exists
+        existing_chatbot = supabase_admin.table("chatbots").select(
+            "knowledge_base"
+        ).eq("id", request.chatbot_id).single().execute()
+        
+        existing_kb = existing_chatbot.data.get("knowledge_base") or "" if existing_chatbot.data else ""
+        
+        # Combine existing and new content (with separator)
+        new_knowledge_base = existing_kb
+        if new_knowledge_base:
+            new_knowledge_base += f"\n\n--- Content from {request.url} ---\n"
+        new_knowledge_base += crawled_content[:50000]  # Limit content size
+        
+        # Save to chatbot
+        supabase_admin.table("chatbots").update({
+            "knowledge_base": new_knowledge_base
+        }).eq("id", request.chatbot_id).execute()
 
         return WebsiteCrawlResponse(
             success=True,
@@ -255,6 +306,8 @@ async def crawl_website(
             content_extracted=result["content_length"]
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Crawl error: {e}")
         return WebsiteCrawlResponse(

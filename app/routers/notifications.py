@@ -56,7 +56,7 @@ async def send_contact_form(form: ContactFormRequest):
         """
 
         email = EmailNotification(
-            to_email="support@yourdomain.com",  # Configure this
+            to_email=settings.support_email,
             subject=f"Contact Form: {form.subject}",
             html_content=html_content,
             from_name="Voxtro Contact Form"
@@ -92,7 +92,7 @@ async def send_ticket_reply_notification(
         <p><strong>Ticket:</strong> {ticket.data.get('subject')}</p>
         <p><strong>Reply:</strong></p>
         <p>{reply_content}</p>
-        <p><a href="https://yourdomain.com/customer-portal/tickets/{ticket_id}">View Ticket</a></p>
+        <p><a href="{settings.frontend_url}/customer-portal/tickets/{ticket_id}">View Ticket</a></p>
         """
 
         email = EmailNotification(
@@ -124,7 +124,7 @@ async def send_admin_ticket_notification(
         <h2>New Support Ticket Created</h2>
         <p><strong>From:</strong> {customer_name}</p>
         <p><strong>Subject:</strong> {ticket_subject}</p>
-        <p><a href="https://yourdomain.com/admin/tickets/{ticket_id}">View Ticket</a></p>
+        <p><a href="{settings.frontend_url}/admin/tickets/{ticket_id}">View Ticket</a></p>
         """
 
         email = EmailNotification(
