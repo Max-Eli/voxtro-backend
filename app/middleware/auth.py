@@ -1,9 +1,9 @@
 """Authentication middleware and dependencies"""
 from fastapi import Request, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import jwt, JWTError
 from typing import Optional, Dict
 from app.config import get_settings
+import httpx
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)
@@ -13,16 +13,7 @@ async def verify_token(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ) -> Optional[Dict]:
     """
-    Verify Supabase JWT token
-
-    Args:
-        credentials: HTTP Bearer credentials from request
-
-    Returns:
-        Dict containing user info if valid, None if no token provided
-
-    Raises:
-        HTTPException: If token is invalid
+    Verify Supabase JWT token via Supabase Auth API
     """
     if not credentials:
         return None
@@ -30,34 +21,35 @@ async def verify_token(
     token = credentials.credentials
 
     try:
-        # Decode JWT
-        payload = jwt.decode(
-            token,
-            settings.supabase_jwt_secret,
-            algorithms=["HS256"],
-            options={"verify_aud": False}
-        )
+        # Verify token by calling Supabase auth API
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.supabase_url}/auth/v1/user",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": settings.supabase_anon_key
+                }
+            )
 
-        # Extract user info
-        user_id = payload.get("sub")
-        user_role = payload.get("role")
-        email = payload.get("email")
-        user_metadata = payload.get("user_metadata", {})
-        is_customer = user_metadata.get("is_customer", False)
+        if response.status_code != 200:
+            raise HTTPException(status_code=401, detail="Invalid authentication token")
+
+        user_data = response.json()
 
         return {
-            "user_id": user_id,
-            "role": user_role,
-            "email": email,
-            "is_customer": is_customer,
+            "user_id": user_data.get("id"),
+            "role": user_data.get("role"),
+            "email": user_data.get("email"),
+            "is_customer": user_data.get("user_metadata", {}).get("is_customer", False),
             "raw_token": token,
-            "metadata": user_metadata
+            "metadata": user_data.get("user_metadata", {})
         }
-    except JWTError as e:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid authentication token"
-        )
+    except httpx.RequestError:
+        raise HTTPException(status_code=401, detail="Authentication service unavailable")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
 
 
 async def get_current_user(
