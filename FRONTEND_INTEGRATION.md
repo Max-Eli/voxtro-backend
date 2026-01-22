@@ -561,3 +561,44 @@ VITE_API_URL=https://voxtro-backend.onrender.com
 3. **API Keys**: Let users input OpenAI/VAPI/ElevenLabs keys, save via backend
 4. **Customer Portal**: Detect `is_customer` in user metadata, show different UI
 5. **Real-time**: Use Supabase Realtime for live message updates if needed
+
+---
+
+## 12. WIDGET MESSENGER PAGE (REQUIRED)
+
+The backend widget script loads an **iframe** that points to your Vercel frontend. You MUST create this page:
+
+### Required Route
+```
+/messenger/[chatbotId]
+```
+
+Example URL:
+```
+https://your-vercel-app.vercel.app/messenger/fff796d6-9883-40b2-9101-0a96012700b7
+```
+
+### What this page should do:
+
+1. **Extract `chatbotId`** from the URL params
+2. **Fetch config** from: `GET https://voxtro-backend.onrender.com/api/widget/{chatbot_id}/config`
+3. **Render a chat interface** with:
+   - The chatbot's name, colors, avatar from config
+   - First message display
+   - Input field for user messages
+4. **Send messages** to: `POST https://voxtro-backend.onrender.com/api/widget/{chatbot_id}/message`
+   ```json
+   {
+     "visitor_id": "unique_visitor_id",
+     "message": "user message",
+     "conversation_id": "uuid or null"
+   }
+   ```
+5. **Store `visitor_id`** in localStorage to maintain session
+6. **Store `conversation_id`** from first response to continue conversation
+
+### Important Notes:
+- This page will be loaded inside an **iframe** on customer websites
+- No authentication required (public endpoint)
+- The page should be **responsive** and work well in the iframe dimensions (400x600px default)
+- Without this page, the widget embed will show a 404 error
