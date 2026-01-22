@@ -12,9 +12,31 @@ class WidgetConfig(BaseModel):
     placeholder_text: Optional[str] = None
     forms: List[Dict[str, Any]] = []
     faqs: List[Dict[str, Any]] = []
+    
+    # Position and colors
     widget_position: str = "bottom-right"
     primary_color: Optional[str] = None
     secondary_color: Optional[str] = None
+    
+    # Widget button styling
+    widget_button_color: Optional[str] = None
+    widget_text_color: Optional[str] = None
+    widget_size: Optional[str] = None
+    widget_border_radius: Optional[str] = None
+    widget_button_text: Optional[str] = None
+    
+    # Overlay/appearance
+    widget_overlay_color: Optional[str] = None
+    widget_overlay_opacity: Optional[str] = None
+    widget_fullscreen: Optional[str] = None
+    widget_custom_css: Optional[str] = None
+    hide_branding: bool = False
+    
+    # Gradient support
+    theme_color_type: Optional[str] = None
+    theme_gradient_start: Optional[str] = None
+    theme_gradient_end: Optional[str] = None
+    theme_gradient_angle: Optional[int] = None
 
 
 class WidgetMessageRequest(BaseModel):

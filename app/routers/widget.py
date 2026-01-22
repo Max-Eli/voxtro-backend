@@ -33,58 +33,38 @@ async def get_widget_config(chatbot_id: str):
 
         chatbot = chatbot_result.data
 
-        # Handle multiple possible data structures for theme/colors
-        # Check for JSON theme/settings objects first
-        theme_obj = chatbot.get("theme") or chatbot.get("settings") or chatbot.get("widget_settings") or {}
-        if isinstance(theme_obj, str):
-            import json
-            try:
-                theme_obj = json.loads(theme_obj)
-            except:
-                theme_obj = {}
+        # Extract theme colors - support both solid and gradient
+        theme_color_type = chatbot.get("theme_color_type", "solid")
+        
+        if theme_color_type == "gradient":
+            # For gradients, return gradient info
+            primary_color = chatbot.get("theme_gradient_start") or "#6366f1"
+            gradient_end = chatbot.get("theme_gradient_end") or "#8b5cf6"
+            gradient_angle = chatbot.get("theme_gradient_angle") or 135
+        else:
+            # Solid color - use theme_color
+            primary_color = chatbot.get("theme_color") or "#6366f1"
+            gradient_end = None
+            gradient_angle = None
 
-        # Extract colors from various possible locations
-        primary_color = (
-            chatbot.get("primary_color") or 
-            chatbot.get("primaryColor") or 
-            theme_obj.get("primary_color") or 
-            theme_obj.get("primaryColor") or
-            theme_obj.get("color") or
-            "#6366f1"
-        )
-        secondary_color = (
-            chatbot.get("secondary_color") or 
-            chatbot.get("secondaryColor") or
-            theme_obj.get("secondary_color") or
-            theme_obj.get("secondaryColor") or
-            "#ffffff"
-        )
-        widget_position = (
-            chatbot.get("widget_position") or 
-            chatbot.get("widgetPosition") or
-            theme_obj.get("position") or
-            theme_obj.get("widget_position") or
-            "bottom-right"
-        )
-        avatar_url = (
-            chatbot.get("avatar_url") or 
-            chatbot.get("avatarUrl") or
-            chatbot.get("avatar") or
-            theme_obj.get("avatar_url") or
-            theme_obj.get("avatar")
-        )
-        first_message = (
-            chatbot.get("first_message") or 
-            chatbot.get("firstMessage") or
-            chatbot.get("greeting") or
-            chatbot.get("welcome_message")
-        )
-        placeholder_text = (
-            chatbot.get("placeholder_text") or 
-            chatbot.get("placeholderText") or
-            chatbot.get("placeholder") or
-            "Type your message..."
-        )
+        # Widget appearance
+        widget_button_color = chatbot.get("widget_button_color") or primary_color
+        widget_text_color = chatbot.get("widget_text_color") or "#ffffff"
+        widget_position = chatbot.get("widget_position") or "bottom-right"
+        widget_size = chatbot.get("widget_size") or "medium"
+        widget_border_radius = chatbot.get("widget_border_radius") or "rounded"
+        widget_button_text = chatbot.get("widget_button_text") or "Chat with us"
+        
+        # Overlay settings
+        widget_overlay_color = chatbot.get("widget_overlay_color")
+        widget_overlay_opacity = chatbot.get("widget_overlay_opacity")
+        widget_fullscreen = chatbot.get("widget_fullscreen")
+        widget_custom_css = chatbot.get("widget_custom_css")
+        hide_branding = chatbot.get("hide_branding", False)
+
+        # Messages
+        welcome_message = chatbot.get("welcome_message") or chatbot.get("first_message")
+        avatar_url = chatbot.get("avatar_url")
 
         # Get forms
         forms_result = supabase_admin.table("chatbot_forms").select(
@@ -102,18 +82,36 @@ async def get_widget_config(chatbot_id: str):
             chatbot_id=chatbot["id"],
             name=chatbot.get("name", "Assistant"),
             theme={
+                "color_type": theme_color_type,
                 "primary_color": primary_color,
-                "secondary_color": secondary_color,
+                "gradient_end": gradient_end,
+                "gradient_angle": gradient_angle,
                 "position": widget_position,
                 "avatar": avatar_url
             },
-            first_message=first_message,
-            placeholder_text=placeholder_text,
+            first_message=welcome_message,
+            placeholder_text=chatbot.get("placeholder_text") or "Type your message...",
             forms=forms_result.data or [],
             faqs=faqs_result.data or [],
+            # Widget styling
             widget_position=widget_position,
             primary_color=primary_color,
-            secondary_color=secondary_color
+            secondary_color=widget_text_color,
+            widget_button_color=widget_button_color,
+            widget_text_color=widget_text_color,
+            widget_size=widget_size,
+            widget_border_radius=widget_border_radius,
+            widget_button_text=widget_button_text,
+            widget_overlay_color=widget_overlay_color,
+            widget_overlay_opacity=widget_overlay_opacity,
+            widget_fullscreen=widget_fullscreen,
+            widget_custom_css=widget_custom_css,
+            hide_branding=hide_branding,
+            # Gradient support
+            theme_color_type=theme_color_type,
+            theme_gradient_start=primary_color if theme_color_type == "gradient" else None,
+            theme_gradient_end=gradient_end,
+            theme_gradient_angle=gradient_angle
         )
 
     except HTTPException:
@@ -214,9 +212,29 @@ async def get_widget_script(chatbot_id: str):
         config = await loadConfig();
         if (!config) return;
 
-        const primaryColor = config.primary_color || '#6366f1';
+        // Get button color - prefer widget_button_color, fall back to primary_color or theme_color
+        const buttonColor = config.widget_button_color || config.primary_color || '#6366f1';
+        const textColor = config.widget_text_color || '#ffffff';
         const position = config.widget_position || 'bottom-right';
         const isRight = position.includes('right');
+        const buttonText = config.widget_button_text;
+        const size = config.widget_size || 'medium';
+        const borderRadius = config.widget_border_radius || 'rounded';
+        
+        // Size mappings
+        const sizeMap = {{ small: 50, medium: 60, large: 70 }};
+        const buttonSize = sizeMap[size] || 60;
+        
+        // Border radius mappings
+        const radiusMap = {{ square: '8px', rounded: '50%', pill: '30px' }};
+        const radius = radiusMap[borderRadius] || '50%';
+
+        // Support gradient backgrounds
+        let buttonBackground = buttonColor;
+        if (config.theme_color_type === 'gradient' && config.theme_gradient_start && config.theme_gradient_end) {{
+            const angle = config.theme_gradient_angle || 135;
+            buttonBackground = `linear-gradient(${{angle}}deg, ${{config.theme_gradient_start}}, ${{config.theme_gradient_end}})`;
+        }}
 
         // Create main wrapper
         const wrapper = document.createElement('div');
@@ -259,14 +277,22 @@ async def get_widget_script(chatbot_id: str):
         // Create toggle button
         toggleButton = document.createElement('button');
         toggleButton.id = 'voxtro-toggle-button';
-        toggleButton.innerHTML = getChatIcon();
+        toggleButton.innerHTML = buttonText ? `<span style="margin-right: 8px;">${{getChatIcon()}}</span>${{buttonText}}` : getChatIcon();
+        
+        // Adjust button style based on whether text is present
+        const buttonWidth = buttonText ? 'auto' : `${{buttonSize}}px`;
+        const buttonPadding = buttonText ? '12px 20px' : '0';
+        const actualRadius = buttonText ? '30px' : radius;
+        
         toggleButton.style.cssText = `
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
+            min-width: ${{buttonSize}}px;
+            width: ${{buttonWidth}};
+            height: ${{buttonSize}}px;
+            padding: ${{buttonPadding}};
+            border-radius: ${{actualRadius}};
             border: none;
-            background: ${{primaryColor}};
-            color: white;
+            background: ${{buttonBackground}};
+            color: ${{textColor}};
             cursor: pointer;
             display: flex;
             align-items: center;
