@@ -4,6 +4,9 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, Dict
 from app.config import get_settings
 import httpx
+import logging
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 security = HTTPBearer(auto_error=False)
@@ -32,9 +35,11 @@ async def verify_token(
             )
 
         if response.status_code != 200:
+            logger.warning(f"Supabase auth failed: {response.status_code} - {response.text}")
             raise HTTPException(status_code=401, detail="Invalid authentication token")
 
         user_data = response.json()
+        logger.info(f"Auth successful for user: {user_data.get('id')}")
 
         return {
             "user_id": user_data.get("id"),
