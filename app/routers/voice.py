@@ -134,7 +134,7 @@ async def validate_voice_connection(
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 "https://api.vapi.ai/assistant",
-                headers={"Authorization": f"Bearer {validation.public_key}"}
+                headers={"Authorization": f"Bearer {validation.api_key}"}
             )
 
             if response.status_code != 200:

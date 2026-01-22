@@ -34,5 +34,5 @@ class VapiWebhookPayload(BaseModel):
 
 class VoiceConnectionValidation(BaseModel):
     """Validate voice connection"""
-    public_key: str
+    api_key: str
     org_id: Optional[str] = None
