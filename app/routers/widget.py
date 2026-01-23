@@ -90,6 +90,7 @@ async def get_widget_config(chatbot_id: str):
                 "avatar": avatar_url
             },
             first_message=welcome_message,
+            welcome_message=welcome_message,  # Send both for frontend compatibility
             placeholder_text=chatbot.get("placeholder_text") or "Type your message...",
             forms=forms_result.data or [],
             faqs=faqs_result.data or [],

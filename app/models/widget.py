@@ -9,6 +9,7 @@ class WidgetConfig(BaseModel):
     name: str
     theme: Dict[str, Any]
     first_message: Optional[str] = None
+    welcome_message: Optional[str] = None  # Alias for first_message for frontend compatibility
     placeholder_text: Optional[str] = None
     forms: List[Dict[str, Any]] = []
     faqs: List[Dict[str, Any]] = []
