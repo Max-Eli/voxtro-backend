@@ -545,3 +545,269 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
     except Exception as e:
         logger.error(f"Get customer leads error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/portal/analytics")
+async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)):
+    """Get comprehensive analytics for customer's assigned agents (CUSTOMER PORTAL)"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Initialize response structure
+        response = {
+            "chatbots": {
+                "assigned": [],
+                "total_conversations": 0,
+                "total_messages": 0,
+                "avg_messages_per_conversation": 0
+            },
+            "voice_assistants": {
+                "assigned": [],
+                "total_calls": 0,
+                "total_duration": 0,
+                "avg_duration": 0,
+                "success_rate": 0
+            },
+            "whatsapp_agents": {
+                "assigned": [],
+                "total_conversations": 0,
+                "total_messages": 0
+            },
+            "leads": {
+                "recent": [],
+                "total_count": 0,
+                "conversion_rates": {
+                    "chatbot": 0,
+                    "voice": 0,
+                    "whatsapp": 0,
+                    "overall": 0
+                }
+            },
+            "support_tickets": {
+                "recent": [],
+                "open_count": 0
+            }
+        }
+
+        # ========== CHATBOTS ==========
+        chatbot_assignments = supabase_admin.table("customer_chatbot_assignments").select(
+            "chatbot_id, chatbots(id, name, description, theme_color)"
+        ).eq("customer_id", customer_id).execute()
+
+        chatbot_ids = []
+        if chatbot_assignments.data:
+            chatbot_ids = [a["chatbot_id"] for a in chatbot_assignments.data]
+
+            # Get conversation counts
+            conversations = supabase_admin.table("conversations").select(
+                "id, chatbot_id"
+            ).in_("chatbot_id", chatbot_ids).execute()
+
+            conversation_counts = {}
+            for conv in (conversations.data or []):
+                cid = conv["chatbot_id"]
+                conversation_counts[cid] = conversation_counts.get(cid, 0) + 1
+
+            # Get message counts
+            conv_ids = [c["id"] for c in (conversations.data or [])]
+            message_counts = {}
+            if conv_ids:
+                messages = supabase_admin.table("messages").select(
+                    "conversation_id"
+                ).in_("conversation_id", conv_ids).execute()
+
+                # Map conversation_id to chatbot_id
+                conv_to_chatbot = {c["id"]: c["chatbot_id"] for c in (conversations.data or [])}
+                for msg in (messages.data or []):
+                    chatbot_id = conv_to_chatbot.get(msg["conversation_id"])
+                    if chatbot_id:
+                        message_counts[chatbot_id] = message_counts.get(chatbot_id, 0) + 1
+
+            # Build chatbot list
+            for assignment in chatbot_assignments.data:
+                chatbot = assignment.get("chatbots", {})
+                cid = chatbot.get("id")
+                response["chatbots"]["assigned"].append({
+                    "id": cid,
+                    "name": chatbot.get("name", "Unknown"),
+                    "description": chatbot.get("description"),
+                    "theme_color": chatbot.get("theme_color"),
+                    "conversation_count": conversation_counts.get(cid, 0),
+                    "message_count": message_counts.get(cid, 0)
+                })
+
+            total_convs = len(conversations.data or [])
+            total_msgs = sum(message_counts.values())
+            response["chatbots"]["total_conversations"] = total_convs
+            response["chatbots"]["total_messages"] = total_msgs
+            response["chatbots"]["avg_messages_per_conversation"] = (
+                round(total_msgs / total_convs) if total_convs > 0 else 0
+            )
+
+        # ========== VOICE ASSISTANTS ==========
+        try:
+            voice_assignments = supabase_admin.table("customer_assistant_assignments").select(
+                "assistant_id, voice_assistants(id, name, first_message, voice_provider, phone_number)"
+            ).eq("customer_id", customer_id).execute()
+
+            assistant_ids = []
+            if voice_assignments.data:
+                assistant_ids = [a["assistant_id"] for a in voice_assignments.data]
+
+                # Get call stats
+                calls = supabase_admin.table("voice_assistant_calls").select(
+                    "assistant_id, duration_seconds, status"
+                ).in_("assistant_id", assistant_ids).execute()
+
+                call_counts = {}
+                duration_sums = {}
+                for call in (calls.data or []):
+                    aid = call["assistant_id"]
+                    call_counts[aid] = call_counts.get(aid, 0) + 1
+                    if call.get("duration_seconds"):
+                        duration_sums[aid] = duration_sums.get(aid, 0) + call["duration_seconds"]
+
+                for assignment in voice_assignments.data:
+                    assistant = assignment.get("voice_assistants", {})
+                    aid = assistant.get("id")
+                    response["voice_assistants"]["assigned"].append({
+                        "id": aid,
+                        "name": assistant.get("name", "Unknown"),
+                        "first_message": assistant.get("first_message"),
+                        "voice_provider": assistant.get("voice_provider"),
+                        "phone_number": assistant.get("phone_number"),
+                        "call_count": call_counts.get(assignment["assistant_id"], 0),
+                        "total_duration": duration_sums.get(assignment["assistant_id"], 0)
+                    })
+
+                total_calls = len(calls.data or [])
+                total_duration = sum(duration_sums.values())
+                successful_calls = len([c for c in (calls.data or []) if c.get("duration_seconds", 0) > 0])
+                response["voice_assistants"]["total_calls"] = total_calls
+                response["voice_assistants"]["total_duration"] = total_duration
+                response["voice_assistants"]["avg_duration"] = (
+                    round(total_duration / successful_calls) if successful_calls > 0 else 0
+                )
+                response["voice_assistants"]["success_rate"] = (
+                    round((successful_calls / total_calls) * 100) if total_calls > 0 else 0
+                )
+        except Exception as e:
+            logger.debug(f"Voice assistant data not available: {e}")
+
+        # ========== WHATSAPP AGENTS ==========
+        try:
+            wa_assignments = supabase_admin.table("customer_whatsapp_agent_assignments").select(
+                "agent_id, whatsapp_agents(id, name, phone_number, status)"
+            ).eq("customer_id", customer_id).execute()
+
+            agent_ids = []
+            if wa_assignments.data:
+                agent_ids = [a["agent_id"] for a in wa_assignments.data]
+
+                # Get conversation counts
+                wa_convs = supabase_admin.table("whatsapp_conversations").select(
+                    "id, agent_id"
+                ).in_("agent_id", agent_ids).execute()
+
+                conv_counts = {}
+                for conv in (wa_convs.data or []):
+                    aid = conv["agent_id"]
+                    conv_counts[aid] = conv_counts.get(aid, 0) + 1
+
+                # Get message count
+                wa_conv_ids = [c["id"] for c in (wa_convs.data or [])]
+                total_wa_msgs = 0
+                if wa_conv_ids:
+                    wa_msgs = supabase_admin.table("whatsapp_messages").select(
+                        "id", count="exact"
+                    ).in_("conversation_id", wa_conv_ids).execute()
+                    total_wa_msgs = wa_msgs.count or 0
+
+                for assignment in wa_assignments.data:
+                    agent = assignment.get("whatsapp_agents", {})
+                    response["whatsapp_agents"]["assigned"].append({
+                        "id": agent.get("id"),
+                        "name": agent.get("name", "Unknown"),
+                        "phone_number": agent.get("phone_number"),
+                        "status": agent.get("status"),
+                        "conversation_count": conv_counts.get(assignment["agent_id"], 0)
+                    })
+
+                response["whatsapp_agents"]["total_conversations"] = len(wa_convs.data or [])
+                response["whatsapp_agents"]["total_messages"] = total_wa_msgs
+        except Exception as e:
+            logger.debug(f"WhatsApp agent data not available: {e}")
+
+        # ========== LEADS ==========
+        all_source_ids = chatbot_ids + assistant_ids + agent_ids
+        total_leads = 0
+        chatbot_leads = 0
+        voice_leads = 0
+        wa_leads = 0
+
+        if all_source_ids:
+            # Get lead counts by source type
+            for source_type, ids in [("chatbot", chatbot_ids), ("voice", assistant_ids), ("whatsapp", agent_ids)]:
+                if ids:
+                    count_result = supabase_admin.table("leads").select(
+                        "id", count="exact"
+                    ).eq("source_type", source_type).in_("source_id", ids).execute()
+                    count = count_result.count or 0
+                    total_leads += count
+                    if source_type == "chatbot":
+                        chatbot_leads = count
+                    elif source_type == "voice":
+                        voice_leads = count
+                    else:
+                        wa_leads = count
+
+            # Get recent leads
+            recent_leads = supabase_admin.table("leads").select(
+                "id, name, email, phone_number, source_type, source_name, extracted_at"
+            ).in_("source_id", all_source_ids).order("extracted_at", desc=True).limit(5).execute()
+
+            response["leads"]["recent"] = recent_leads.data or []
+
+        response["leads"]["total_count"] = total_leads
+
+        # Calculate conversion rates
+        total_chatbot_interactions = response["chatbots"]["total_conversations"]
+        total_voice_interactions = response["voice_assistants"]["total_calls"]
+        total_wa_interactions = response["whatsapp_agents"]["total_conversations"]
+        total_interactions = total_chatbot_interactions + total_voice_interactions + total_wa_interactions
+
+        response["leads"]["conversion_rates"] = {
+            "chatbot": round((chatbot_leads / total_chatbot_interactions) * 100) if total_chatbot_interactions > 0 else 0,
+            "voice": round((voice_leads / total_voice_interactions) * 100) if total_voice_interactions > 0 else 0,
+            "whatsapp": round((wa_leads / total_wa_interactions) * 100) if total_wa_interactions > 0 else 0,
+            "overall": round((total_leads / total_interactions) * 100) if total_interactions > 0 else 0
+        }
+
+        # ========== SUPPORT TICKETS ==========
+        tickets = supabase_admin.table("support_tickets").select(
+            "id, subject, status, priority, created_at, updated_at"
+        ).eq("customer_id", customer_id).order("updated_at", desc=True).limit(5).execute()
+
+        response["support_tickets"]["recent"] = tickets.data or []
+        response["support_tickets"]["open_count"] = len([
+            t for t in (tickets.data or [])
+            if t.get("status") in ["open", "in_progress"]
+        ])
+
+        return response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get customer analytics error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
