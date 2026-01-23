@@ -27,13 +27,15 @@ async def extract_leads(conversation_id: str, auth_data: Dict = Depends(get_curr
 
         chatbot_id = conv_result.data["chatbot_id"]
 
-        # Verify chatbot belongs to user
-        chatbot_result = supabase_admin.table("chatbots").select("id").eq(
+        # Verify chatbot belongs to user and get name
+        chatbot_result = supabase_admin.table("chatbots").select("id, name").eq(
             "id", chatbot_id
         ).eq("user_id", user_id).single().execute()
 
         if not chatbot_result.data:
             raise HTTPException(status_code=403, detail="Access denied")
+
+        chatbot_name = chatbot_result.data.get("name")
 
         # Get user's OpenAI API key
         openai_api_key = await get_user_openai_key(user_id)
@@ -52,15 +54,20 @@ async def extract_leads(conversation_id: str, auth_data: Dict = Depends(get_curr
         if not lead_info:
             return {"success": True, "leads_found": 0, "message": "No lead information found"}
 
-        # Save lead to database
+        # Save lead to database with correct schema
         lead_result = supabase_admin.table("leads").insert({
             "conversation_id": conversation_id,
-            "chatbot_id": chatbot_id,
+            "source_id": chatbot_id,
+            "source_type": "chatbot",
+            "source_name": chatbot_name,
+            "user_id": user_id,
             "name": lead_info.get("name"),
             "email": lead_info.get("email"),
-            "phone": lead_info.get("phone"),
-            "company": lead_info.get("company"),
-            "notes": lead_info.get("notes")
+            "phone_number": lead_info.get("phone"),
+            "additional_data": {
+                "company": lead_info.get("company"),
+                "notes": lead_info.get("notes")
+            }
         }).execute()
 
         # Mark conversation as lead extracted
@@ -95,10 +102,10 @@ async def extract_leads_batch(
         # Get user's OpenAI API key
         openai_api_key = await get_user_openai_key(user_id)
 
-        # Build query for user's chatbots
+        # Build query for user's chatbots with names
         if chatbot_id:
-            # Verify chatbot belongs to user
-            chatbot_check = supabase_admin.table("chatbots").select("id").eq(
+            # Verify chatbot belongs to user and get name
+            chatbot_check = supabase_admin.table("chatbots").select("id, name").eq(
                 "id", chatbot_id
             ).eq("user_id", user_id).single().execute()
 
@@ -106,12 +113,14 @@ async def extract_leads_batch(
                 raise HTTPException(status_code=403, detail="Chatbot not found or access denied")
 
             chatbot_ids = [chatbot_id]
+            chatbot_names = {chatbot_id: chatbot_check.data.get("name")}
         else:
-            # Get all user's chatbots
-            chatbots_result = supabase_admin.table("chatbots").select("id").eq(
+            # Get all user's chatbots with names
+            chatbots_result = supabase_admin.table("chatbots").select("id, name").eq(
                 "user_id", user_id
             ).execute()
             chatbot_ids = [bot["id"] for bot in (chatbots_result.data or [])]
+            chatbot_names = {bot["id"]: bot["name"] for bot in (chatbots_result.data or [])}
 
         if not chatbot_ids:
             return {"success": True, "leads_extracted": 0, "message": "No chatbots found"}
@@ -137,15 +146,20 @@ async def extract_leads_batch(
             lead_info = await extract_lead_info(messages_result.data, openai_api_key)
 
             if lead_info:
-                # Save lead
+                # Save lead with correct schema
                 lead_result = supabase_admin.table("leads").insert({
                     "conversation_id": conv["id"],
-                    "chatbot_id": conv["chatbot_id"],
+                    "source_id": conv["chatbot_id"],
+                    "source_type": "chatbot",
+                    "source_name": chatbot_names.get(conv["chatbot_id"]),
+                    "user_id": user_id,
                     "name": lead_info.get("name"),
                     "email": lead_info.get("email"),
-                    "phone": lead_info.get("phone"),
-                    "company": lead_info.get("company"),
-                    "notes": lead_info.get("notes")
+                    "phone_number": lead_info.get("phone"),
+                    "additional_data": {
+                        "company": lead_info.get("company"),
+                        "notes": lead_info.get("notes")
+                    }
                 }).execute()
 
                 leads_extracted += 1
@@ -203,10 +217,10 @@ async def get_leads(
         if not chatbot_ids:
             return {"leads": []}
 
-        # Get leads
+        # Get leads with correct column names
         leads_result = supabase_admin.table("leads").select(
-            "id, conversation_id, chatbot_id, name, email, phone, company, notes, created_at"
-        ).in_("chatbot_id", chatbot_ids).order("created_at", desc=True).limit(limit).execute()
+            "id, conversation_id, source_id, source_type, source_name, name, email, phone_number, additional_data, extracted_at"
+        ).in_("source_id", chatbot_ids).eq("source_type", "chatbot").order("extracted_at", desc=True).limit(limit).execute()
 
         return {"leads": leads_result.data or []}
 
