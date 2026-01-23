@@ -473,7 +473,7 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
                         "extracted_at": lead["created_at"]
                     })
 
-        # Get voice assistant assignments and their leads (if table exists)
+        # Get voice assistant leads from voice_assistant_calls.lead_info
         try:
             voice_assignments = supabase_admin.table("customer_assistant_assignments").select(
                 "assistant_id, voice_assistants(name)"
@@ -483,28 +483,31 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
                 assistant_ids = [a["assistant_id"] for a in voice_assignments.data]
                 assistant_names = {a["assistant_id"]: a.get("voice_assistants", {}).get("name", "Unknown") for a in voice_assignments.data}
 
-                voice_leads = supabase_admin.table("leads").select(
-                    "id, name, email, phone_number, source_type, source_id, source_name, extracted_at, conversation_id"
-                ).eq("source_type", "voice").in_("source_id", assistant_ids).order("extracted_at", desc=True).execute()
+                # Voice leads are stored in voice_assistant_calls.lead_info JSON column
+                voice_calls = supabase_admin.table("voice_assistant_calls").select(
+                    "id, assistant_id, lead_info, started_at"
+                ).in_("assistant_id", assistant_ids).not_.is_("lead_info", "null").order("started_at", desc=True).execute()
 
-                if voice_leads.data:
-                    for lead in voice_leads.data:
-                        all_leads.append({
-                            "id": lead["id"],
-                            "source_type": "voice",
-                            "source_id": lead["source_id"],
-                            "source_name": lead.get("source_name") or assistant_names.get(lead["source_id"], "Unknown"),
-                            "conversation_id": lead.get("conversation_id"),
-                            "name": lead.get("name"),
-                            "email": lead.get("email"),
-                            "phone_number": lead.get("phone_number"),
-                            "additional_data": {},
-                            "extracted_at": lead["extracted_at"]
-                        })
+                if voice_calls.data:
+                    for call in voice_calls.data:
+                        lead_info = call.get("lead_info") or {}
+                        if lead_info.get("name") or lead_info.get("email") or lead_info.get("phone"):
+                            all_leads.append({
+                                "id": call["id"],
+                                "source_type": "voice",
+                                "source_id": call["assistant_id"],
+                                "source_name": assistant_names.get(call["assistant_id"], "Unknown"),
+                                "conversation_id": call["id"],
+                                "name": lead_info.get("name"),
+                                "email": lead_info.get("email"),
+                                "phone_number": lead_info.get("phone"),
+                                "additional_data": {"company": lead_info.get("company"), "interest_level": lead_info.get("interest_level")},
+                                "extracted_at": call["started_at"]
+                            })
         except Exception as e:
             logger.debug(f"Voice assistant leads not available: {e}")
 
-        # Get whatsapp agent assignments and their leads (if table exists)
+        # Get whatsapp agent leads from whatsapp_conversations.lead_info
         try:
             whatsapp_assignments = supabase_admin.table("customer_whatsapp_agent_assignments").select(
                 "agent_id, whatsapp_agents(name)"
@@ -514,24 +517,27 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
                 agent_ids = [a["agent_id"] for a in whatsapp_assignments.data]
                 agent_names = {a["agent_id"]: a.get("whatsapp_agents", {}).get("name", "Unknown") for a in whatsapp_assignments.data}
 
-                whatsapp_leads = supabase_admin.table("leads").select(
-                    "id, name, email, phone_number, source_type, source_id, source_name, extracted_at, conversation_id"
-                ).eq("source_type", "whatsapp").in_("source_id", agent_ids).order("extracted_at", desc=True).execute()
+                # WhatsApp leads are stored in whatsapp_conversations.lead_info JSON column
+                wa_convos = supabase_admin.table("whatsapp_conversations").select(
+                    "id, agent_id, lead_info, created_at"
+                ).in_("agent_id", agent_ids).not_.is_("lead_info", "null").order("created_at", desc=True).execute()
 
-                if whatsapp_leads.data:
-                    for lead in whatsapp_leads.data:
-                        all_leads.append({
-                            "id": lead["id"],
-                            "source_type": "whatsapp",
-                            "source_id": lead["source_id"],
-                            "source_name": lead.get("source_name") or agent_names.get(lead["source_id"], "Unknown"),
-                            "conversation_id": lead.get("conversation_id"),
-                            "name": lead.get("name"),
-                            "email": lead.get("email"),
-                            "phone_number": lead.get("phone_number"),
-                            "additional_data": {},
-                            "extracted_at": lead["extracted_at"]
-                        })
+                if wa_convos.data:
+                    for conv in wa_convos.data:
+                        lead_info = conv.get("lead_info") or {}
+                        if lead_info.get("name") or lead_info.get("email") or lead_info.get("phone"):
+                            all_leads.append({
+                                "id": conv["id"],
+                                "source_type": "whatsapp",
+                                "source_id": conv["agent_id"],
+                                "source_name": agent_names.get(conv["agent_id"], "Unknown"),
+                                "conversation_id": conv["id"],
+                                "name": lead_info.get("name"),
+                                "email": lead_info.get("email"),
+                                "phone_number": lead_info.get("phone"),
+                                "additional_data": {"company": lead_info.get("company"), "interest_level": lead_info.get("interest_level")},
+                                "extracted_at": conv["created_at"]
+                            })
         except Exception as e:
             logger.debug(f"WhatsApp agent leads not available: {e}")
 
