@@ -1,0 +1,10 @@
+# Supabase Configuration
+
+[project]
+id = "nzqzmvsrsfynatxojuil"
+
+# Edge Functions Configuration
+[functions.weekly-emails]
+# Run every Monday at 9:00 AM UTC
+schedule = "0 9 * * 1"
+verify_jwt = false
