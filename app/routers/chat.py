@@ -42,13 +42,14 @@ async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any])
         import httpx
         import json
 
-        action_type = action.get("type", "api")
+        action_type = action.get("action_type", "api")
+        config = action.get("configuration", {})
 
         if action_type == "api":
             # Execute API call
-            url = action.get("url", "")
-            method = action.get("method", "GET").upper()
-            headers = action.get("headers", {})
+            url = config.get("url", "")
+            method = config.get("method", "GET").upper()
+            headers = config.get("headers", {})
 
             # Replace parameters in URL and body
             for param_name, param_value in arguments.items():
@@ -58,7 +59,7 @@ async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any])
                 if method == "GET":
                     response = await client.get(url, headers=headers)
                 elif method == "POST":
-                    body = action.get("body", {})
+                    body = config.get("body", {})
                     # Replace parameters in body
                     body_str = json.dumps(body)
                     for param_name, param_value in arguments.items():
@@ -66,7 +67,7 @@ async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any])
                     body = json.loads(body_str)
                     response = await client.post(url, json=body, headers=headers)
                 elif method == "PUT":
-                    body = action.get("body", {})
+                    body = config.get("body", {})
                     body_str = json.dumps(body)
                     for param_name, param_value in arguments.items():
                         body_str = body_str.replace(f"{{{{{param_name}}}}}", str(param_value))
@@ -87,8 +88,8 @@ async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any])
 
         elif action_type == "webhook":
             # Execute webhook
-            url = action.get("url", "")
-            headers = action.get("headers", {})
+            url = config.get("url", "")
+            headers = config.get("headers", {})
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
@@ -344,7 +345,7 @@ async def handle_chat_message(
                     function_args = json.loads(function_args)
 
                 # Find the matching action
-                action = next((a for a in chatbot_actions if a["name"] == function_name), None)
+                action = next((a for a in chatbot["actions"] if a["name"] == function_name), None)
 
                 if action:
                     # Execute the action based on type
