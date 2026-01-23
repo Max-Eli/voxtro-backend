@@ -1,10 +1,17 @@
 # Supabase Configuration
+project_id = "nzqzmvsrsfynatxojuil"
 
-[project]
-id = "nzqzmvsrsfynatxojuil"
+[api]
+enabled = true
+port = 54321
+
+[db]
+port = 54322
+
+[studio]
+enabled = true
+port = 54323
 
 # Edge Functions Configuration
 [functions.weekly-emails]
-# Run every Monday at 9:00 AM UTC
-schedule = "0 9 * * 1"
 verify_jwt = false
