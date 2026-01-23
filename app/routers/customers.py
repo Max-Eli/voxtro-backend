@@ -36,7 +36,7 @@ async def create_customer(customer: CustomerCreate, auth_data: Dict = Depends(ge
 
         customer_user_id = auth_result.user.id
 
-        # Create customer profile with optional chatbot link
+        # Create customer profile
         customer_data = {
             "user_id": customer_user_id,  # Link to auth user for portal login
             "email": customer.email,
@@ -45,24 +45,26 @@ async def create_customer(customer: CustomerCreate, auth_data: Dict = Depends(ge
             "created_by_user_id": business_owner_id  # Business owner who created this customer
         }
 
-        # Add chatbot link if provided
+        customer_result = supabase_admin.table("customers").insert(customer_data).execute()
+        customer_id = customer_result.data[0]["id"]
+
+        # Create chatbot assignment if provided (uses separate assignments table)
         if customer.chatbot_id:
             # Verify the chatbot belongs to the business owner
             chatbot_check = supabase_admin.table("chatbots").select("id").eq(
                 "id", customer.chatbot_id
             ).eq("user_id", business_owner_id).single().execute()
 
-            if not chatbot_check.data:
-                raise HTTPException(status_code=404, detail="Chatbot not found or unauthorized")
-
-            customer_data["chatbot_id"] = customer.chatbot_id
-
-        customer_result = supabase_admin.table("customers").insert(customer_data).execute()
-
-        customer_id = customer_result.data[0]["id"]
+            if chatbot_check.data:
+                # Create assignment in customer_chatbot_assignments table
+                supabase_admin.table("customer_chatbot_assignments").insert({
+                    "customer_id": customer_id,
+                    "chatbot_id": customer.chatbot_id,
+                    "assigned_by": business_owner_id
+                }).execute()
 
         logger.info(f"Customer created: {customer_id} by user {business_owner_id}" +
-                   (f" linked to chatbot {customer.chatbot_id}" if customer.chatbot_id else ""))
+                   (f" with chatbot assignment {customer.chatbot_id}" if customer.chatbot_id else ""))
 
         return CustomerCreateResponse(
             customer_id=customer_id,
