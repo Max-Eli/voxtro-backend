@@ -112,20 +112,43 @@ async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any])
                 except:
                     headers = {}
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    url,
-                    json=arguments,
-                    headers=headers
-                )
+            webhook_result = "Tool executed successfully"
 
-                if response.status_code >= 200 and response.status_code < 300:
-                    try:
-                        return json.dumps(response.json())
-                    except:
-                        return response.text or "Webhook executed successfully"
-                else:
-                    return f"Webhook failed with status {response.status_code}: {response.text}"
+            # Only call webhook if URL is provided
+            if url and url.strip():
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        url,
+                        json=arguments,
+                        headers=headers
+                    )
+
+                    if response.status_code >= 200 and response.status_code < 300:
+                        try:
+                            webhook_result = json.dumps(response.json())
+                        except:
+                            webhook_result = response.text or "Webhook executed successfully"
+                    else:
+                        webhook_result = f"Webhook failed with status {response.status_code}: {response.text}"
+
+            # Handle email automation if enabled
+            email_automation = config.get("emailAutomation", {})
+            if email_automation.get("enabled"):
+                try:
+                    from app.routers.notifications import send_tool_automation_email
+
+                    await send_tool_automation_email(
+                        recipients=email_automation.get("recipients", ""),
+                        subject=email_automation.get("subject", "Chatbot Notification"),
+                        body=email_automation.get("body", ""),
+                        chatbot_name=action.get("name", "Chatbot"),
+                        parameters=arguments
+                    )
+                    logger.info(f"Email automation triggered for tool: {action.get('name')}")
+                except Exception as email_error:
+                    logger.error(f"Email automation error: {email_error}")
+
+            return webhook_result
 
         else:
             return f"Unsupported action type: {action_type}"
