@@ -425,3 +425,124 @@ async def create_customer_ticket(
     except Exception as e:
         logger.error(f"Create customer ticket error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/portal/leads")
+async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
+    """Get leads for customer's assigned agents (CUSTOMER PORTAL)"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+        all_leads = []
+
+        # Get chatbot assignments and their leads
+        chatbot_assignments = supabase_admin.table("customer_chatbot_assignments").select(
+            "chatbot_id, chatbots(name)"
+        ).eq("customer_id", customer_id).execute()
+
+        if chatbot_assignments.data:
+            chatbot_ids = [a["chatbot_id"] for a in chatbot_assignments.data]
+            chatbot_names = {a["chatbot_id"]: a.get("chatbots", {}).get("name", "Unknown") for a in chatbot_assignments.data}
+
+            # Get leads for these chatbots
+            chatbot_leads = supabase_admin.table("leads").select(
+                "id, conversation_id, name, email, phone, company, notes, created_at, chatbot_id"
+            ).in_("chatbot_id", chatbot_ids).order("created_at", desc=True).execute()
+
+            if chatbot_leads.data:
+                for lead in chatbot_leads.data:
+                    all_leads.append({
+                        "id": lead["id"],
+                        "source_type": "chatbot",
+                        "source_id": lead["chatbot_id"],
+                        "source_name": chatbot_names.get(lead["chatbot_id"], "Unknown"),
+                        "conversation_id": lead["conversation_id"],
+                        "name": lead.get("name"),
+                        "email": lead.get("email"),
+                        "phone_number": lead.get("phone"),
+                        "additional_data": {"company": lead.get("company"), "notes": lead.get("notes")},
+                        "extracted_at": lead["created_at"]
+                    })
+
+        # Get voice assistant assignments and their leads (if table exists)
+        try:
+            voice_assignments = supabase_admin.table("customer_assistant_assignments").select(
+                "assistant_id, voice_assistants(name)"
+            ).eq("customer_id", customer_id).execute()
+
+            if voice_assignments.data:
+                assistant_ids = [a["assistant_id"] for a in voice_assignments.data]
+                assistant_names = {a["assistant_id"]: a.get("voice_assistants", {}).get("name", "Unknown") for a in voice_assignments.data}
+
+                # Check if leads table has source_type column for voice leads
+                voice_leads = supabase_admin.table("leads").select(
+                    "id, conversation_id, name, email, phone, company, notes, created_at, source_id, source_type"
+                ).eq("source_type", "voice").in_("source_id", assistant_ids).order("created_at", desc=True).execute()
+
+                if voice_leads.data:
+                    for lead in voice_leads.data:
+                        all_leads.append({
+                            "id": lead["id"],
+                            "source_type": "voice",
+                            "source_id": lead["source_id"],
+                            "source_name": assistant_names.get(lead["source_id"], "Unknown"),
+                            "conversation_id": lead.get("conversation_id"),
+                            "name": lead.get("name"),
+                            "email": lead.get("email"),
+                            "phone_number": lead.get("phone"),
+                            "additional_data": {"company": lead.get("company"), "notes": lead.get("notes")},
+                            "extracted_at": lead["created_at"]
+                        })
+        except Exception as e:
+            logger.debug(f"Voice assistant leads not available: {e}")
+
+        # Get whatsapp agent assignments and their leads (if table exists)
+        try:
+            whatsapp_assignments = supabase_admin.table("customer_whatsapp_agent_assignments").select(
+                "agent_id, whatsapp_agents(name)"
+            ).eq("customer_id", customer_id).execute()
+
+            if whatsapp_assignments.data:
+                agent_ids = [a["agent_id"] for a in whatsapp_assignments.data]
+                agent_names = {a["agent_id"]: a.get("whatsapp_agents", {}).get("name", "Unknown") for a in whatsapp_assignments.data}
+
+                whatsapp_leads = supabase_admin.table("leads").select(
+                    "id, conversation_id, name, email, phone, company, notes, created_at, source_id, source_type"
+                ).eq("source_type", "whatsapp").in_("source_id", agent_ids).order("created_at", desc=True).execute()
+
+                if whatsapp_leads.data:
+                    for lead in whatsapp_leads.data:
+                        all_leads.append({
+                            "id": lead["id"],
+                            "source_type": "whatsapp",
+                            "source_id": lead["source_id"],
+                            "source_name": agent_names.get(lead["source_id"], "Unknown"),
+                            "conversation_id": lead.get("conversation_id"),
+                            "name": lead.get("name"),
+                            "email": lead.get("email"),
+                            "phone_number": lead.get("phone"),
+                            "additional_data": {"company": lead.get("company"), "notes": lead.get("notes")},
+                            "extracted_at": lead["created_at"]
+                        })
+        except Exception as e:
+            logger.debug(f"WhatsApp agent leads not available: {e}")
+
+        # Sort all leads by date descending
+        all_leads.sort(key=lambda x: x["extracted_at"], reverse=True)
+
+        return {"leads": all_leads}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get customer leads error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
