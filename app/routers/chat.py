@@ -242,19 +242,26 @@ async def handle_chat_message(
                 actions=[]
             )
 
-        # Load conversation history (last 20 messages)
+        # Load conversation history (last 20 messages, in chronological order)
         conversation_history = []
         if not request.preview_mode and conversation_id:
+            # Get newest 20 messages by ordering DESC, then reverse for chronological order
             history_result = supabase_admin.table("messages").select(
                 "role, content"
             ).eq("conversation_id", conversation_id).order(
-                "created_at", desc=False
+                "created_at", desc=True
             ).limit(20).execute()
+
+            # Reverse to get chronological order (oldest first)
+            messages_data = list(reversed(history_result.data or []))
 
             conversation_history = [
                 {"role": msg["role"], "content": msg["content"]}
-                for msg in (history_result.data or [])
+                for msg in messages_data
             ]
+
+            logger.info(f"Conversation {conversation_id} has {len(conversation_history)} messages")
+            logger.info(f"Last 3 messages: {conversation_history[-3:] if len(conversation_history) >= 3 else conversation_history}")
 
         # Build system prompt with knowledge base if available
         system_prompt = chatbot.get("system_prompt", "You are a helpful assistant.")
