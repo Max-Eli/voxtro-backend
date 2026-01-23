@@ -45,6 +45,10 @@ async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any])
         action_type = action.get("action_type", "api")
         config = action.get("configuration", {})
 
+        logger.info(f"Executing tool: {action.get('name')} (type: {action_type})")
+        logger.info(f"Action config: {config}")
+        logger.info(f"Arguments: {arguments}")
+
         if action_type == "api":
             # Execute API call
             url = config.get("url", "")
@@ -80,11 +84,16 @@ async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any])
 
                 if response.status_code >= 200 and response.status_code < 300:
                     try:
-                        return json.dumps(response.json())
+                        result = json.dumps(response.json())
+                        logger.info(f"API tool result: {result[:500]}")
+                        return result
                     except:
+                        logger.info(f"API tool result (text): {response.text[:500]}")
                         return response.text
                 else:
-                    return f"API call failed with status {response.status_code}: {response.text}"
+                    error_msg = f"API call failed with status {response.status_code}: {response.text}"
+                    logger.error(error_msg)
+                    return error_msg
 
         elif action_type == "webhook":
             # Execute webhook
@@ -327,6 +336,9 @@ async def handle_chat_message(
 
         # Handle tool calls if present
         if tool_calls:
+            logger.info(f"Tool calls received from OpenAI: {tool_calls}")
+            logger.info(f"Available actions: {[a['name'] for a in chatbot['actions']]}")
+
             # Add the assistant's tool call message to the conversation
             messages.append({
                 "role": "assistant",
