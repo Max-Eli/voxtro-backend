@@ -4,6 +4,7 @@ from typing import Optional, List, Dict, Any
 import uuid
 from datetime import datetime
 import logging
+import json
 
 from app.models.chat import (
     ChatMessageRequest,
@@ -11,7 +12,7 @@ from app.models.chat import (
     WebsiteCrawlRequest,
     WebsiteCrawlResponse
 )
-from app.middleware.auth import get_optional_user
+from app.middleware.auth import get_optional_user, get_current_user
 from app.database import supabase_admin
 from app.services.ai_service import (
     call_openai,
@@ -539,3 +540,232 @@ async def crawl_website(
             content_extracted=0,
             error=str(e)
         )
+
+
+async def generate_conversation_summary(conversation_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Generate AI summary of a chatbot conversation
+
+    Args:
+        conversation_id: The conversation ID
+        user_id: User ID to get OpenAI key
+
+    Returns:
+        Summary dict with summary, key_points, action_items, sentiment, lead_info
+    """
+    try:
+        # Get conversation messages
+        messages_result = supabase_admin.table("messages").select(
+            "role, content, created_at"
+        ).eq("conversation_id", conversation_id).order("created_at", desc=False).execute()
+
+        if not messages_result.data or len(messages_result.data) < 2:
+            return None
+
+        # Build transcript text
+        transcript_text = ""
+        for msg in messages_result.data:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            transcript_text += f"{role}: {msg['content']}\n"
+
+        # Get user's OpenAI API key
+        openai_api_key = await get_user_openai_key(user_id, allow_fallback=True)
+
+        summary_prompt = f"""Analyze the following chatbot conversation and provide a comprehensive summary.
+
+CONVERSATION:
+{transcript_text}
+
+Provide your analysis in the following JSON format:
+{{
+    "summary": "Brief 2-3 sentence summary of the conversation",
+    "key_points": ["Key point 1", "Key point 2", ...],
+    "action_items": ["Action item 1", "Action item 2", ...],
+    "sentiment": "positive/neutral/negative",
+    "sentiment_notes": "Brief explanation of user sentiment",
+    "lead_info": {{
+        "name": "User name if mentioned",
+        "email": "Email if mentioned",
+        "phone": "Phone if mentioned",
+        "company": "Company if mentioned",
+        "interest_level": "high/medium/low/unknown",
+        "notes": "Any relevant notes about the potential lead"
+    }},
+    "conversation_outcome": "resolved/follow_up_needed/escalated/information_provided/other",
+    "topics_discussed": ["Topic 1", "Topic 2", ...]
+}}
+
+Respond ONLY with valid JSON, no additional text."""
+
+        response = await call_openai(
+            messages=[{"role": "user", "content": summary_prompt}],
+            api_key=openai_api_key,
+            model="gpt-4o-mini",
+            temperature=0.3,
+            max_tokens=1000
+        )
+
+        summary_data = json.loads(response["message"])
+        return summary_data
+
+    except Exception as e:
+        logger.error(f"Error generating conversation summary: {e}")
+        return None
+
+
+@router.post("/conversations/{conversation_id}/end")
+async def end_conversation(
+    conversation_id: str,
+    auth_data: Optional[Dict] = Depends(get_optional_user)
+):
+    """
+    End a conversation and generate AI summary
+    Can be called by chatbot widget when user closes chat
+    """
+    try:
+        # Get conversation and verify it exists
+        conv_result = supabase_admin.table("conversations").select(
+            "id, chatbot_id, status"
+        ).eq("id", conversation_id).single().execute()
+
+        if not conv_result.data:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        conversation = conv_result.data
+
+        # Get chatbot to find user_id for API key
+        chatbot_result = supabase_admin.table("chatbots").select(
+            "user_id"
+        ).eq("id", conversation["chatbot_id"]).single().execute()
+
+        if not chatbot_result.data:
+            raise HTTPException(status_code=404, detail="Chatbot not found")
+
+        user_id = chatbot_result.data["user_id"]
+
+        # Generate summary
+        summary = await generate_conversation_summary(conversation_id, user_id)
+
+        # Update conversation with summary and end status
+        update_data = {
+            "status": "ended",
+            "ended_at": datetime.utcnow().isoformat()
+        }
+
+        if summary:
+            update_data["summary"] = summary.get("summary")
+            update_data["key_points"] = summary.get("key_points")
+            update_data["action_items"] = summary.get("action_items")
+            update_data["sentiment"] = summary.get("sentiment")
+            update_data["sentiment_notes"] = summary.get("sentiment_notes")
+            update_data["conversation_outcome"] = summary.get("conversation_outcome")
+            update_data["topics_discussed"] = summary.get("topics_discussed")
+            update_data["lead_info"] = summary.get("lead_info")
+
+            logger.info(f"Generated summary for conversation {conversation_id}")
+
+        supabase_admin.table("conversations").update(
+            update_data
+        ).eq("id", conversation_id).execute()
+
+        return {
+            "success": True,
+            "summary": summary
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"End conversation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/conversations/{conversation_id}/generate-summary")
+async def regenerate_conversation_summary(
+    conversation_id: str,
+    auth_data: Dict = Depends(get_current_user)
+):
+    """
+    Generate or regenerate AI summary for a conversation (admin only)
+    """
+    try:
+        user_id = auth_data["user_id"]
+
+        # Verify conversation belongs to user's chatbot
+        conv_result = supabase_admin.table("conversations").select(
+            "id, chatbot_id, chatbots!inner(user_id)"
+        ).eq("id", conversation_id).single().execute()
+
+        if not conv_result.data:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        if conv_result.data["chatbots"]["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Generate summary
+        summary = await generate_conversation_summary(conversation_id, user_id)
+
+        if not summary:
+            raise HTTPException(status_code=500, detail="Failed to generate summary")
+
+        # Save summary
+        supabase_admin.table("conversations").update({
+            "summary": summary.get("summary"),
+            "key_points": summary.get("key_points"),
+            "action_items": summary.get("action_items"),
+            "sentiment": summary.get("sentiment"),
+            "sentiment_notes": summary.get("sentiment_notes"),
+            "conversation_outcome": summary.get("conversation_outcome"),
+            "topics_discussed": summary.get("topics_discussed"),
+            "lead_info": summary.get("lead_info")
+        }).eq("id", conversation_id).execute()
+
+        return {
+            "success": True,
+            "summary": summary
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Regenerate summary error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/conversations/{conversation_id}")
+async def get_conversation_details(
+    conversation_id: str,
+    auth_data: Dict = Depends(get_current_user)
+):
+    """
+    Get conversation details including summary
+    """
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get conversation with chatbot info
+        conv_result = supabase_admin.table("conversations").select(
+            "*, chatbots!inner(id, name, user_id)"
+        ).eq("id", conversation_id).single().execute()
+
+        if not conv_result.data:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        if conv_result.data["chatbots"]["user_id"] != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Get messages
+        messages_result = supabase_admin.table("messages").select(
+            "id, role, content, created_at"
+        ).eq("conversation_id", conversation_id).order("created_at", desc=False).execute()
+
+        return {
+            "conversation": conv_result.data,
+            "messages": messages_result.data or []
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get conversation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
