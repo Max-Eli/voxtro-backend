@@ -145,10 +145,11 @@ async def update_whatsapp_agent(agent_id: str, updates: WhatsAppAgentUpdate, aut
 
 @router.get("/{agent_id}")
 async def get_whatsapp_agent(agent_id: str, auth_data: Dict = Depends(get_current_user)):
-    """Get WhatsApp agent details"""
+    """Get WhatsApp agent details including ElevenLabs configuration"""
     try:
         user_id = auth_data["user_id"]
 
+        # Verify agent belongs to user
         agent = supabase_admin.table("whatsapp_agents").select("*").eq(
             "id", agent_id
         ).eq("user_id", user_id).single().execute()
@@ -156,7 +157,82 @@ async def get_whatsapp_agent(agent_id: str, auth_data: Dict = Depends(get_curren
         if not agent.data:
             raise HTTPException(status_code=404, detail="Agent not found")
 
-        return agent.data
+        # Get ElevenLabs connection
+        conn_result = supabase_admin.table("elevenlabs_connections").select("*").eq(
+            "user_id", user_id
+        ).eq("is_active", True).single().execute()
+
+        if not conn_result.data:
+            raise HTTPException(status_code=404, detail="ElevenLabs connection not found")
+
+        api_key = conn_result.data["api_key"]
+
+        # Fetch agent configuration from ElevenLabs
+        agent_config = None
+        conversations = []
+
+        async with httpx.AsyncClient() as client:
+            # Get agent details from ElevenLabs
+            agent_response = await client.get(
+                f"https://api.elevenlabs.io/v1/convai/agents/{agent_id}",
+                headers={"xi-api-key": api_key}
+            )
+
+            if agent_response.status_code == 200:
+                agent_data = agent_response.json()
+                agent_config = {
+                    "agent_id": agent_id,
+                    "name": agent_data.get("name", agent.data.get("name")),
+                    "phone_number": agent.data.get("phone_number"),
+                    "system_prompt": agent_data.get("conversation_config", {}).get("agent", {}).get("prompt", {}).get("prompt", ""),
+                    "first_message": agent_data.get("conversation_config", {}).get("agent", {}).get("first_message", ""),
+                    "language": agent_data.get("conversation_config", {}).get("agent", {}).get("language", "en"),
+                    "voice_id": agent_data.get("conversation_config", {}).get("tts", {}).get("voice_id", ""),
+                    "model_id": agent_data.get("conversation_config", {}).get("tts", {}).get("model_id", ""),
+                    "llm_model": agent_data.get("conversation_config", {}).get("agent", {}).get("prompt", {}).get("llm", ""),
+                    "temperature": agent_data.get("conversation_config", {}).get("agent", {}).get("prompt", {}).get("temperature", 0.7),
+                    "max_tokens": agent_data.get("conversation_config", {}).get("agent", {}).get("prompt", {}).get("max_tokens", 1000),
+                    "tools": agent_data.get("conversation_config", {}).get("agent", {}).get("prompt", {}).get("tools", []),
+                    "data_collection": agent_data.get("conversation_config", {}).get("agent", {}).get("data_collection", {}),
+                    "max_duration_seconds": agent_data.get("conversation_config", {}).get("conversation", {}).get("max_duration_seconds"),
+                    "conversation_config": agent_data.get("conversation_config", {})
+                }
+
+            # Get conversations from ElevenLabs
+            conv_response = await client.get(
+                f"https://api.elevenlabs.io/v1/convai/conversations",
+                headers={"xi-api-key": api_key},
+                params={"agent_id": agent_id}
+            )
+
+            if conv_response.status_code == 200:
+                conv_data = conv_response.json()
+                conversations = conv_data.get("conversations", [])
+
+        # If we couldn't get config from ElevenLabs, use database data
+        if not agent_config:
+            agent_config = {
+                "agent_id": agent_id,
+                "name": agent.data.get("name"),
+                "phone_number": agent.data.get("phone_number"),
+                "system_prompt": "",
+                "first_message": "",
+                "language": "en",
+                "voice_id": "",
+                "model_id": "",
+                "llm_model": "",
+                "temperature": 0.7,
+                "max_tokens": 1000,
+                "tools": [],
+                "data_collection": {},
+                "max_duration_seconds": None,
+                "conversation_config": {}
+            }
+
+        return {
+            "agent": agent_config,
+            "conversations": conversations
+        }
 
     except HTTPException:
         raise
