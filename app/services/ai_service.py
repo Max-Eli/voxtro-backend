@@ -200,8 +200,11 @@ async def call_openai(
 
             data = response.json()
 
+            # Get the message content (may be null if tool calls are present)
+            message_content = data["choices"][0]["message"].get("content")
+
             return {
-                "message": data["choices"][0]["message"]["content"],
+                "message": message_content,
                 "tool_calls": data["choices"][0]["message"].get("tool_calls"),
                 "usage": data.get("usage", {}),
                 "model": data.get("model")

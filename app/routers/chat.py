@@ -27,6 +27,92 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any]) -> str:
+    """
+    Execute a chatbot action/tool with the provided arguments
+
+    Args:
+        action: Action configuration from chatbot_actions table
+        arguments: Arguments passed from OpenAI tool call
+
+    Returns:
+        String result of the action execution
+    """
+    try:
+        import httpx
+        import json
+
+        action_type = action.get("type", "api")
+
+        if action_type == "api":
+            # Execute API call
+            url = action.get("url", "")
+            method = action.get("method", "GET").upper()
+            headers = action.get("headers", {})
+
+            # Replace parameters in URL and body
+            for param_name, param_value in arguments.items():
+                url = url.replace(f"{{{{{param_name}}}}}", str(param_value))
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                if method == "GET":
+                    response = await client.get(url, headers=headers)
+                elif method == "POST":
+                    body = action.get("body", {})
+                    # Replace parameters in body
+                    body_str = json.dumps(body)
+                    for param_name, param_value in arguments.items():
+                        body_str = body_str.replace(f"{{{{{param_name}}}}}", str(param_value))
+                    body = json.loads(body_str)
+                    response = await client.post(url, json=body, headers=headers)
+                elif method == "PUT":
+                    body = action.get("body", {})
+                    body_str = json.dumps(body)
+                    for param_name, param_value in arguments.items():
+                        body_str = body_str.replace(f"{{{{{param_name}}}}}", str(param_value))
+                    body = json.loads(body_str)
+                    response = await client.put(url, json=body, headers=headers)
+                elif method == "DELETE":
+                    response = await client.delete(url, headers=headers)
+                else:
+                    return f"Unsupported HTTP method: {method}"
+
+                if response.status_code >= 200 and response.status_code < 300:
+                    try:
+                        return json.dumps(response.json())
+                    except:
+                        return response.text
+                else:
+                    return f"API call failed with status {response.status_code}: {response.text}"
+
+        elif action_type == "webhook":
+            # Execute webhook
+            url = action.get("url", "")
+            headers = action.get("headers", {})
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    url,
+                    json=arguments,
+                    headers=headers
+                )
+
+                if response.status_code >= 200 and response.status_code < 300:
+                    try:
+                        return json.dumps(response.json())
+                    except:
+                        return response.text or "Webhook executed successfully"
+                else:
+                    return f"Webhook failed with status {response.status_code}: {response.text}"
+
+        else:
+            return f"Unsupported action type: {action_type}"
+
+    except Exception as e:
+        logger.error(f"Tool execution error: {e}")
+        return f"Error executing tool: {str(e)}"
+
+
 @router.post("/message", response_model=ChatMessageResponse)
 async def handle_chat_message(
     request: ChatMessageRequest,
@@ -235,10 +321,62 @@ async def handle_chat_message(
         )
 
         response_message = ai_response["message"]
+        tool_calls = ai_response.get("tool_calls")
         usage = ai_response.get("usage", {})
 
-        # Save assistant message (skip if preview)
-        if not request.preview_mode and conversation_id:
+        # Handle tool calls if present
+        if tool_calls:
+            # Add the assistant's tool call message to the conversation
+            messages.append({
+                "role": "assistant",
+                "content": response_message,
+                "tool_calls": tool_calls
+            })
+
+            # Execute each tool and collect results
+            for tool_call in tool_calls:
+                function_name = tool_call["function"]["name"]
+                function_args = tool_call["function"]["arguments"]
+
+                # Parse arguments if they're a string
+                import json
+                if isinstance(function_args, str):
+                    function_args = json.loads(function_args)
+
+                # Find the matching action
+                action = next((a for a in chatbot_actions if a["name"] == function_name), None)
+
+                if action:
+                    # Execute the action based on type
+                    tool_result = await execute_tool_action(action, function_args)
+                else:
+                    tool_result = f"Error: Function {function_name} not found"
+
+                # Add tool result to messages
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call["id"],
+                    "content": tool_result
+                })
+
+            # Call OpenAI again with tool results to get final response
+            final_response = await call_openai(
+                messages=messages,
+                api_key=openai_api_key,
+                model=chatbot.get("model", "gpt-4o-mini"),
+                temperature=chatbot.get("temperature", 0.7),
+                max_tokens=chatbot.get("max_tokens", 1000),
+                tools=tools
+            )
+
+            response_message = final_response["message"]
+            # Add final response usage to total
+            final_usage = final_response.get("usage", {})
+            usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + final_usage.get("prompt_tokens", 0)
+            usage["completion_tokens"] = usage.get("completion_tokens", 0) + final_usage.get("completion_tokens", 0)
+
+        # Save assistant message (skip if preview) - only save if there's actual content
+        if not request.preview_mode and conversation_id and response_message:
             supabase_admin.table("messages").insert({
                 "conversation_id": conversation_id,
                 "role": "assistant",
@@ -267,8 +405,8 @@ async def handle_chat_message(
 
         return ChatMessageResponse(
             conversation_id=conversation_id or "preview",
-            message=response_message,
-            actions=ai_response.get("tool_calls")
+            message=response_message or "Processing...",
+            actions=tool_calls
         )
 
     except HTTPException:
