@@ -24,21 +24,32 @@ async def sync_voice_assistants(
     try:
         user_id = auth_data["user_id"]
 
-        # Get VAPI connection
+        # Get ACTIVE VAPI connection (user may have multiple)
         conn_result = supabase_admin.table("voice_connections").select(
             "*"
-        ).eq("user_id", user_id).single().execute()
+        ).eq("user_id", user_id).eq("is_active", True).single().execute()
 
         if not conn_result.data:
-            raise HTTPException(status_code=404, detail="VAPI connection not found")
+            # Fallback: try to get any connection if no active one
+            conn_result = supabase_admin.table("voice_connections").select(
+                "*"
+            ).eq("user_id", user_id).limit(1).execute()
 
-        public_key = conn_result.data["public_key"]
+            if not conn_result.data or len(conn_result.data) == 0:
+                raise HTTPException(status_code=404, detail="VAPI connection not found")
+
+            conn_data = conn_result.data[0]
+        else:
+            conn_data = conn_result.data
+
+        # Use api_key for server-side API calls (NOT public_key which is for client-side)
+        api_key = conn_data["api_key"]
 
         # Fetch assistants from VAPI
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 "https://api.vapi.ai/assistant",
-                headers={"Authorization": f"Bearer {public_key}"}
+                headers={"Authorization": f"Bearer {api_key}"}
             )
 
             if response.status_code != 200:
@@ -90,12 +101,15 @@ async def update_voice_assistant(
         if not assistant.data:
             raise HTTPException(status_code=404, detail="Assistant not found")
 
-        # Get VAPI connection
+        # Get ACTIVE VAPI connection
         conn_result = supabase_admin.table("voice_connections").select(
-            "public_key"
-        ).eq("user_id", user_id).single().execute()
+            "api_key"
+        ).eq("user_id", user_id).eq("is_active", True).single().execute()
 
-        public_key = conn_result.data["public_key"]
+        if not conn_result.data:
+            raise HTTPException(status_code=404, detail="No active VAPI connection found")
+
+        api_key = conn_result.data["api_key"]
 
         # Update in VAPI
         update_data = updates.dict(exclude_unset=True)
@@ -103,7 +117,7 @@ async def update_voice_assistant(
         async with httpx.AsyncClient() as client:
             response = await client.patch(
                 f"https://api.vapi.ai/assistant/{assistant_id}",
-                headers={"Authorization": f"Bearer {public_key}"},
+                headers={"Authorization": f"Bearer {api_key}"},
                 json=update_data
             )
 

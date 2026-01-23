@@ -6,7 +6,7 @@ import httpx
 import json
 from datetime import datetime
 
-from app.models.whatsapp import WhatsAppAgentSyncResponse, WhatsAppAgentUpdate
+from app.models.whatsapp import WhatsAppAgentSyncResponse, WhatsAppAgentUpdate, ElevenLabsConnectionValidation
 from app.middleware.auth import get_current_user
 from app.database import supabase_admin
 from app.config import get_settings
@@ -242,21 +242,48 @@ async def get_whatsapp_agent(agent_id: str, auth_data: Dict = Depends(get_curren
 
 
 @router.post("/validate-elevenlabs")
-async def validate_elevenlabs_connection(api_key: str, auth_data: Dict = Depends(get_current_user)):
-    """Validate ElevenLabs API key connection"""
+async def validate_elevenlabs_connection(
+    validation: ElevenLabsConnectionValidation = None,
+    api_key: str = None,
+    auth_data: Dict = Depends(get_current_user)
+):
+    """Validate ElevenLabs API key connection - accepts key via body or query param"""
     try:
-        async with httpx.AsyncClient() as client:
+        # Support both body (validation.api_key) and query param (api_key)
+        key = None
+        if validation and validation.api_key:
+            key = validation.api_key.strip()
+        elif api_key:
+            key = api_key.strip()
+
+        if not key:
+            return {"valid": False, "error": "API key is required"}
+
+        logger.info(f"Validating ElevenLabs API key (length: {len(key)})")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
                 "https://api.elevenlabs.io/v1/user",
-                headers={"xi-api-key": api_key}
+                headers={"xi-api-key": key}
             )
 
-            if response.status_code != 200:
-                return {"valid": False, "error": "Invalid API key"}
+            logger.info(f"ElevenLabs validation response: {response.status_code}")
+
+            if response.status_code == 401:
+                return {"valid": False, "error": "Invalid API key - unauthorized"}
+            elif response.status_code == 403:
+                return {"valid": False, "error": "API key does not have required permissions"}
+            elif response.status_code != 200:
+                error_text = response.text[:200] if response.text else "Unknown error"
+                logger.error(f"ElevenLabs API error: {response.status_code} - {error_text}")
+                return {"valid": False, "error": f"API error: {response.status_code}"}
 
             user_data = response.json()
             return {"valid": True, "user": user_data}
 
+    except httpx.TimeoutException:
+        logger.error("ElevenLabs validation timeout")
+        return {"valid": False, "error": "Connection timeout - please try again"}
     except Exception as e:
         logger.error(f"ElevenLabs validation error: {e}")
         return {"valid": False, "error": str(e)}
