@@ -459,26 +459,27 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
             chatbot_ids = [a["chatbot_id"] for a in chatbot_assignments.data]
             chatbot_names = {a["chatbot_id"]: a.get("chatbots", {}).get("name", "Unknown") for a in chatbot_assignments.data}
 
-            # Get leads for these chatbots (leads use source_id and source_type columns)
-            chatbot_leads = supabase_admin.table("leads").select(
-                "id, name, email, phone_number, source_id, source_type, source_name, conversation_id, additional_data, extracted_at"
-            ).in_("source_id", chatbot_ids).eq("source_type", "chatbot").order("extracted_at", desc=True).execute()
+            # Get chatbot leads from conversations.lead_info (populated by AI summary)
+            chatbot_convos = supabase_admin.table("conversations").select(
+                "id, chatbot_id, lead_info, created_at"
+            ).in_("chatbot_id", chatbot_ids).not_.is_("lead_info", "null").order("created_at", desc=True).execute()
 
-            if chatbot_leads.data:
-                for lead in chatbot_leads.data:
-                    additional = lead.get("additional_data") or {}
-                    all_leads.append({
-                        "id": lead["id"],
-                        "source_type": "chatbot",
-                        "source_id": lead["source_id"],
-                        "source_name": lead.get("source_name") or chatbot_names.get(lead["source_id"], "Unknown"),
-                        "conversation_id": lead.get("conversation_id"),
-                        "name": lead.get("name"),
-                        "email": lead.get("email"),
-                        "phone_number": lead.get("phone_number"),
-                        "additional_data": additional,
-                        "extracted_at": lead["extracted_at"]
-                    })
+            if chatbot_convos.data:
+                for conv in chatbot_convos.data:
+                    lead_info = conv.get("lead_info") or {}
+                    if lead_info.get("name") or lead_info.get("email") or lead_info.get("phone"):
+                        all_leads.append({
+                            "id": conv["id"],
+                            "source_type": "chatbot",
+                            "source_id": conv["chatbot_id"],
+                            "source_name": chatbot_names.get(conv["chatbot_id"], "Unknown"),
+                            "conversation_id": conv["id"],
+                            "name": lead_info.get("name"),
+                            "email": lead_info.get("email"),
+                            "phone_number": lead_info.get("phone"),
+                            "additional_data": {"company": lead_info.get("company"), "interest_level": lead_info.get("interest_level")},
+                            "extracted_at": conv["created_at"]
+                        })
 
         # Get voice assistant leads from voice_assistant_calls.lead_info
         try:
@@ -763,54 +764,61 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
             logger.debug(f"WhatsApp agent data not available: {e}")
 
         # ========== LEADS ==========
+        # Leads are stored in the lead_info JSON column of each conversation type
         total_leads = 0
         chatbot_leads_count = 0
         voice_leads_count = 0
         wa_leads_count = 0
+        recent_leads_list = []
 
-        # Get chatbot leads (leads use source_id and source_type columns)
+        # Get chatbot leads from conversations.lead_info
         if chatbot_ids:
-            chatbot_leads_result = supabase_admin.table("leads").select(
-                "id", count="exact"
-            ).in_("source_id", chatbot_ids).eq("source_type", "chatbot").execute()
-            chatbot_leads_count = chatbot_leads_result.count or 0
+            chatbot_leads_result = supabase_admin.table("conversations").select(
+                "id, chatbot_id, lead_info, created_at"
+            ).in_("chatbot_id", chatbot_ids).not_.is_("lead_info", "null").order("created_at", desc=True).execute()
+
+            if chatbot_leads_result.data:
+                for conv in chatbot_leads_result.data:
+                    lead_info = conv.get("lead_info") or {}
+                    if lead_info.get("name") or lead_info.get("email") or lead_info.get("phone"):
+                        chatbot_leads_count += 1
+                        if len(recent_leads_list) < 5:
+                            recent_leads_list.append({
+                                "id": conv["id"],
+                                "name": lead_info.get("name"),
+                                "email": lead_info.get("email"),
+                                "phone_number": lead_info.get("phone"),
+                                "source_type": "chatbot",
+                                "source_name": chatbot_names.get(conv["chatbot_id"], "Unknown") if 'chatbot_names' in dir() else None,
+                                "extracted_at": conv["created_at"]
+                            })
             total_leads += chatbot_leads_count
 
-        # Get voice leads count
+        # Get voice leads from voice_assistant_calls.lead_info
         if assistant_ids:
-            voice_leads_result = supabase_admin.table("leads").select(
-                "id", count="exact"
-            ).in_("source_id", assistant_ids).eq("source_type", "voice").execute()
-            voice_leads_count = voice_leads_result.count or 0
+            voice_leads_result = supabase_admin.table("voice_assistant_calls").select(
+                "id, assistant_id, lead_info, started_at"
+            ).in_("assistant_id", assistant_ids).not_.is_("lead_info", "null").execute()
+
+            if voice_leads_result.data:
+                for call in voice_leads_result.data:
+                    lead_info = call.get("lead_info") or {}
+                    if lead_info.get("name") or lead_info.get("email") or lead_info.get("phone"):
+                        voice_leads_count += 1
             total_leads += voice_leads_count
 
-        # Get whatsapp leads count
+        # Get whatsapp leads from whatsapp_conversations.lead_info
         if agent_ids:
-            wa_leads_result = supabase_admin.table("leads").select(
-                "id", count="exact"
-            ).in_("source_id", agent_ids).eq("source_type", "whatsapp").execute()
-            wa_leads_count = wa_leads_result.count or 0
+            wa_leads_result = supabase_admin.table("whatsapp_conversations").select(
+                "id, agent_id, lead_info, created_at"
+            ).in_("agent_id", agent_ids).not_.is_("lead_info", "null").execute()
+
+            if wa_leads_result.data:
+                for conv in wa_leads_result.data:
+                    lead_info = conv.get("lead_info") or {}
+                    if lead_info.get("name") or lead_info.get("email") or lead_info.get("phone"):
+                        wa_leads_count += 1
             total_leads += wa_leads_count
-
-        # Get recent leads for display (from all sources)
-        recent_leads_list = []
-        all_source_ids = chatbot_ids + assistant_ids + agent_ids
-        if all_source_ids:
-            recent_leads = supabase_admin.table("leads").select(
-                "id, name, email, phone_number, source_id, source_type, source_name, extracted_at"
-            ).in_("source_id", all_source_ids).order("extracted_at", desc=True).limit(5).execute()
-
-            if recent_leads.data:
-                for lead in recent_leads.data:
-                    recent_leads_list.append({
-                        "id": lead["id"],
-                        "name": lead.get("name"),
-                        "email": lead.get("email"),
-                        "phone_number": lead.get("phone_number"),
-                        "source_type": lead.get("source_type"),
-                        "source_name": lead.get("source_name"),
-                        "extracted_at": lead["extracted_at"]
-                    })
 
         response["leads"]["recent"] = recent_leads_list
         response["leads"]["total_count"] = total_leads
