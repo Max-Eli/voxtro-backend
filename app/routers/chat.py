@@ -51,9 +51,15 @@ async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any])
 
         if action_type == "api":
             # Execute API call
-            url = config.get("url", "")
+            url = config.get("url", "") or config.get("webhookUrl", "")
             method = config.get("method", "GET").upper()
             headers = config.get("headers", {})
+            # Parse headers if it's a JSON string
+            if isinstance(headers, str) and headers.strip():
+                try:
+                    headers = json.loads(headers)
+                except:
+                    headers = {}
 
             # Replace parameters in URL and body
             for param_name, param_value in arguments.items():
@@ -95,10 +101,16 @@ async def execute_tool_action(action: Dict[str, Any], arguments: Dict[str, Any])
                     logger.error(error_msg)
                     return error_msg
 
-        elif action_type == "webhook":
+        elif action_type == "webhook" or action_type == "webhook_call" or action_type == "custom_tool":
             # Execute webhook
-            url = config.get("url", "")
+            url = config.get("url", "") or config.get("webhookUrl", "")
             headers = config.get("headers", {})
+            # Parse headers if it's a JSON string
+            if isinstance(headers, str) and headers.strip():
+                try:
+                    headers = json.loads(headers)
+                except:
+                    headers = {}
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(
