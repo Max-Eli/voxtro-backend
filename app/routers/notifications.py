@@ -336,3 +336,102 @@ async def send_weekly_updates_batch(auth_data: Dict = Depends(get_current_user))
     except Exception as e:
         logger.error(f"Batch weekly update error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/cron/weekly-emails")
+async def cron_weekly_emails(cron_secret: str):
+    """
+    Cron job endpoint for sending weekly emails to ALL customers
+    Secured with a secret key (no user auth needed)
+
+    Set CRON_SECRET in your environment variables
+    Call with: POST /api/notifications/cron/weekly-emails?cron_secret=YOUR_SECRET
+    """
+    import os
+    from app.database import supabase_admin
+    from datetime import datetime, timedelta
+
+    expected_secret = os.environ.get("CRON_SECRET", "")
+
+    if not expected_secret or cron_secret != expected_secret:
+        raise HTTPException(status_code=401, detail="Invalid cron secret")
+
+    try:
+        # Get ALL customers across all users
+        customers_result = supabase_admin.table("customers").select(
+            "id, email, full_name, created_by_user_id"
+        ).execute()
+
+        if not customers_result.data:
+            return {"success": True, "emails_sent": 0, "message": "No customers found"}
+
+        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        emails_sent = 0
+        errors = []
+
+        for customer in customers_result.data:
+            try:
+                # Get activity for this customer
+                conversations_result = supabase_admin.table("conversations").select(
+                    "id", count="exact"
+                ).eq("visitor_id", customer.get("user_id", "")).gte("created_at", week_ago).execute()
+
+                tickets_result = supabase_admin.table("support_tickets").select(
+                    "id, subject, status"
+                ).eq("customer_id", customer["id"]).gte("created_at", week_ago).execute()
+
+                open_tickets = [t for t in (tickets_result.data or []) if t["status"] == "open"]
+                resolved_tickets = [t for t in (tickets_result.data or []) if t["status"] in ["resolved", "closed"]]
+
+                html_content = f"""
+                <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                    <h2 style="color: #7c3aed;">Weekly Activity Update</h2>
+                    <p>Hi {customer.get('full_name', 'Valued Customer')},</p>
+                    <p>Here's your weekly summary:</p>
+
+                    <div style="background: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                        <h3 style="margin-top: 0;">This Week's Activity</h3>
+                        <ul style="list-style: none; padding: 0;">
+                            <li>Conversations: <strong>{conversations_result.count or 0}</strong></li>
+                            <li>Support tickets created: <strong>{len(tickets_result.data or [])}</strong></li>
+                            <li>Tickets resolved: <strong>{len(resolved_tickets)}</strong></li>
+                            <li>Tickets pending: <strong>{len(open_tickets)}</strong></li>
+                        </ul>
+                    </div>
+
+                    <p>
+                        <a href="{settings.frontend_url}/customer-portal"
+                           style="background: #7c3aed; color: white; padding: 12px 24px;
+                                  text-decoration: none; border-radius: 6px; display: inline-block;">
+                            View Your Portal
+                        </a>
+                    </p>
+                </div>
+                """
+
+                email = EmailNotification(
+                    to_email=customer["email"],
+                    subject=f"Your Weekly Update - {datetime.utcnow().strftime('%B %d, %Y')}",
+                    html_content=html_content,
+                    from_name="Voxtro"
+                )
+
+                await send_email(email)
+                emails_sent += 1
+
+            except Exception as e:
+                errors.append({"customer_id": customer["id"], "error": str(e)})
+                logger.error(f"Weekly email error for customer {customer['id']}: {e}")
+
+        logger.info(f"Cron weekly emails: sent {emails_sent} emails")
+
+        return {
+            "success": True,
+            "emails_sent": emails_sent,
+            "total_customers": len(customers_result.data),
+            "errors": errors[:10] if errors else None  # Limit error details
+        }
+
+    except Exception as e:
+        logger.error(f"Cron weekly emails error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
