@@ -453,24 +453,24 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
             chatbot_ids = [a["chatbot_id"] for a in chatbot_assignments.data]
             chatbot_names = {a["chatbot_id"]: a.get("chatbots", {}).get("name", "Unknown") for a in chatbot_assignments.data}
 
-            # Get leads for these chatbots (using source_id/source_type columns)
+            # Get leads for these chatbots (leads use chatbot_id column)
             chatbot_leads = supabase_admin.table("leads").select(
-                "id, name, email, phone_number, source_type, source_id, source_name, extracted_at, conversation_id"
-            ).eq("source_type", "chatbot").in_("source_id", chatbot_ids).order("extracted_at", desc=True).execute()
+                "id, name, email, phone, company, notes, chatbot_id, conversation_id, created_at"
+            ).in_("chatbot_id", chatbot_ids).order("created_at", desc=True).execute()
 
             if chatbot_leads.data:
                 for lead in chatbot_leads.data:
                     all_leads.append({
                         "id": lead["id"],
                         "source_type": "chatbot",
-                        "source_id": lead["source_id"],
-                        "source_name": lead.get("source_name") or chatbot_names.get(lead["source_id"], "Unknown"),
+                        "source_id": lead["chatbot_id"],
+                        "source_name": chatbot_names.get(lead["chatbot_id"], "Unknown"),
                         "conversation_id": lead.get("conversation_id"),
                         "name": lead.get("name"),
                         "email": lead.get("email"),
-                        "phone_number": lead.get("phone_number"),
-                        "additional_data": {},
-                        "extracted_at": lead["extracted_at"]
+                        "phone_number": lead.get("phone"),
+                        "additional_data": {"company": lead.get("company"), "notes": lead.get("notes")},
+                        "extracted_at": lead["created_at"]
                     })
 
         # Get voice assistant assignments and their leads (if table exists)
@@ -749,35 +749,39 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
             logger.debug(f"WhatsApp agent data not available: {e}")
 
         # ========== LEADS ==========
-        all_source_ids = chatbot_ids + assistant_ids + agent_ids
         total_leads = 0
-        chatbot_leads = 0
-        voice_leads = 0
-        wa_leads = 0
+        chatbot_leads_count = 0
+        voice_leads_count = 0
+        wa_leads_count = 0
 
-        if all_source_ids:
-            # Get lead counts by source type
-            for source_type, ids in [("chatbot", chatbot_ids), ("voice", assistant_ids), ("whatsapp", agent_ids)]:
-                if ids:
-                    count_result = supabase_admin.table("leads").select(
-                        "id", count="exact"
-                    ).eq("source_type", source_type).in_("source_id", ids).execute()
-                    count = count_result.count or 0
-                    total_leads += count
-                    if source_type == "chatbot":
-                        chatbot_leads = count
-                    elif source_type == "voice":
-                        voice_leads = count
-                    else:
-                        wa_leads = count
+        # Get chatbot leads (leads use chatbot_id column)
+        if chatbot_ids:
+            chatbot_leads_result = supabase_admin.table("leads").select(
+                "id", count="exact"
+            ).in_("chatbot_id", chatbot_ids).execute()
+            chatbot_leads_count = chatbot_leads_result.count or 0
+            total_leads += chatbot_leads_count
 
-            # Get recent leads
+        # Get recent leads for display
+        recent_leads_list = []
+        if chatbot_ids:
             recent_leads = supabase_admin.table("leads").select(
-                "id, name, email, phone_number, source_type, source_name, extracted_at"
-            ).in_("source_id", all_source_ids).order("extracted_at", desc=True).limit(5).execute()
+                "id, name, email, phone, chatbot_id, created_at"
+            ).in_("chatbot_id", chatbot_ids).order("created_at", desc=True).limit(5).execute()
 
-            response["leads"]["recent"] = recent_leads.data or []
+            if recent_leads.data:
+                for lead in recent_leads.data:
+                    recent_leads_list.append({
+                        "id": lead["id"],
+                        "name": lead.get("name"),
+                        "email": lead.get("email"),
+                        "phone_number": lead.get("phone"),
+                        "source_type": "chatbot",
+                        "source_name": None,
+                        "extracted_at": lead["created_at"]
+                    })
 
+        response["leads"]["recent"] = recent_leads_list
         response["leads"]["total_count"] = total_leads
 
         # Calculate conversion rates
@@ -787,9 +791,9 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
         total_interactions = total_chatbot_interactions + total_voice_interactions + total_wa_interactions
 
         response["leads"]["conversion_rates"] = {
-            "chatbot": round((chatbot_leads / total_chatbot_interactions) * 100) if total_chatbot_interactions > 0 else 0,
-            "voice": round((voice_leads / total_voice_interactions) * 100) if total_voice_interactions > 0 else 0,
-            "whatsapp": round((wa_leads / total_wa_interactions) * 100) if total_wa_interactions > 0 else 0,
+            "chatbot": round((chatbot_leads_count / total_chatbot_interactions) * 100) if total_chatbot_interactions > 0 else 0,
+            "voice": round((voice_leads_count / total_voice_interactions) * 100) if total_voice_interactions > 0 else 0,
+            "whatsapp": round((wa_leads_count / total_wa_interactions) * 100) if total_wa_interactions > 0 else 0,
             "overall": round((total_leads / total_interactions) * 100) if total_interactions > 0 else 0
         }
 
