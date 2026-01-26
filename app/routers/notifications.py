@@ -5,7 +5,7 @@ import logging
 import httpx
 import asyncio
 
-from app.models.notification import EmailNotification, ContactFormRequest
+from app.models.notification import EmailNotification, ContactFormRequest, TeamInviteRequest
 from app.middleware.auth import get_current_user
 from app.config import get_settings
 
@@ -485,4 +485,93 @@ async def cron_weekly_emails(cron_secret: str):
 
     except Exception as e:
         logger.error(f"Cron weekly emails error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/team-invite")
+async def send_team_invite(invite: TeamInviteRequest, auth_data: Dict = Depends(get_current_user)):
+    """Send team invitation email"""
+    try:
+        inviter_text = f"<strong>{invite.inviter_name}</strong> has" if invite.inviter_name else "You have been"
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f5;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 40px 20px;">
+                <div style="background-color: white; border-radius: 12px; padding: 40px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                    <!-- Logo -->
+                    <div style="text-align: center; margin-bottom: 32px;">
+                        <img src="https://ik.imagekit.io/wrewtbha2/Voxtro%20(1920%20x%201080%20px)%20(3).png" alt="Voxtro" style="height: 48px;" />
+                    </div>
+
+                    <!-- Content -->
+                    <h1 style="color: #18181b; font-size: 24px; font-weight: 600; margin: 0 0 16px 0; text-align: center;">
+                        You're invited to join a team!
+                    </h1>
+
+                    <p style="color: #52525b; font-size: 16px; line-height: 24px; margin: 0 0 24px 0; text-align: center;">
+                        {inviter_text} invited you to join <strong>{invite.team_name}</strong> on Voxtro.
+                    </p>
+
+                    <p style="color: #71717a; font-size: 14px; line-height: 22px; margin: 0 0 32px 0; text-align: center;">
+                        Join this team to collaborate on tasks, support tickets, voice assistants, and more.
+                    </p>
+
+                    <!-- CTA Button -->
+                    <div style="text-align: center; margin-bottom: 32px;">
+                        <a href="{invite.invite_url}" style="display: inline-block; background-color: #e45133; color: white; font-size: 16px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px;">
+                            Accept Invitation
+                        </a>
+                    </div>
+
+                    <p style="color: #a1a1aa; font-size: 12px; line-height: 20px; margin: 0; text-align: center;">
+                        This invitation will expire in 7 days. If you didn't expect this invitation, you can safely ignore this email.
+                    </p>
+
+                    <!-- Link fallback -->
+                    <div style="margin-top: 24px; padding-top: 24px; border-top: 1px solid #e4e4e7;">
+                        <p style="color: #71717a; font-size: 12px; line-height: 18px; margin: 0; text-align: center;">
+                            If the button doesn't work, copy and paste this link into your browser:
+                        </p>
+                        <p style="color: #3b82f6; font-size: 12px; line-height: 18px; margin: 8px 0 0 0; text-align: center; word-break: break-all;">
+                            {invite.invite_url}
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Footer -->
+                <div style="text-align: center; margin-top: 24px;">
+                    <p style="color: #a1a1aa; font-size: 12px; margin: 0;">
+                        © 2025 Voxtro. All rights reserved.
+                    </p>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+
+        email = EmailNotification(
+            to_email=invite.email,
+            subject=f"You've been invited to join {invite.team_name} on Voxtro",
+            html_content=html_content,
+            from_name="Voxtro"
+        )
+
+        result = await send_email_with_retry(email)
+
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("error", "Failed to send invitation email"))
+
+        logger.info(f"Team invitation email sent to {invite.email} for team {invite.team_name}")
+        return {"success": True, "email_id": result.get("id"), "recipient": invite.email}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Team invite email error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

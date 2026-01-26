@@ -24,3 +24,11 @@ class ContactFormRequest(BaseModel):
     email: EmailStr
     subject: str
     message: str
+
+
+class TeamInviteRequest(BaseModel):
+    """Team invitation email request"""
+    email: EmailStr
+    team_name: str
+    inviter_name: Optional[str] = None
+    invite_url: str
