@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Optional, List
 import logging
 import httpx
+import asyncio
 
 from app.models.notification import EmailNotification, ContactFormRequest
 from app.middleware.auth import get_current_user
@@ -11,6 +12,11 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 router = APIRouter()
 settings = get_settings()
+
+# Rate limiting settings for Resend API
+EMAIL_RATE_LIMIT_DELAY = 0.5  # 500ms between emails (2 emails/second)
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 2  # seconds
 
 
 async def send_tool_automation_email(
@@ -64,36 +70,53 @@ async def send_tool_automation_email(
         </div>
         """
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {settings.resend_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "from": f"{chatbot_name} <dev@dev.voxtro.io>",
-                    "to": recipient_list,
-                    "subject": final_subject,
-                    "html": html_body
-                }
-            )
+        # Use retry logic for tool automation emails
+        for retry in range(MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        "https://api.resend.com/emails",
+                        headers={
+                            "Authorization": f"Bearer {settings.resend_api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "from": f"{chatbot_name} <dev@dev.voxtro.io>",
+                            "to": recipient_list,
+                            "subject": final_subject,
+                            "html": html_body
+                        }
+                    )
 
-            if response.status_code == 200:
-                logger.info(f"Tool automation email sent to {recipient_list}")
-                return True
-            else:
-                logger.error(f"Tool automation email failed: {response.text}")
+                    if response.status_code == 200:
+                        logger.info(f"Tool automation email sent to {recipient_list}")
+                        return True
+                    elif response.status_code == 429 and retry < MAX_RETRIES:
+                        backoff_time = RETRY_BACKOFF_BASE * (2 ** retry)
+                        logger.warning(f"Rate limited, retrying in {backoff_time}s (attempt {retry + 1}/{MAX_RETRIES})")
+                        await asyncio.sleep(backoff_time)
+                        continue
+                    else:
+                        logger.error(f"Tool automation email failed: {response.text}")
+                        return False
+            except Exception as e:
+                if retry < MAX_RETRIES:
+                    await asyncio.sleep(RETRY_BACKOFF_BASE * (2 ** retry))
+                    continue
+                logger.error(f"Tool automation email error: {e}")
                 return False
+        return False
 
     except Exception as e:
         logger.error(f"Tool automation email error: {e}")
         return False
 
 
-@router.post("/email")
-async def send_email(email: EmailNotification):
-    """Send email via Resend"""
+async def send_email_with_retry(email: EmailNotification, retry_count: int = 0) -> Dict:
+    """
+    Send email via Resend with retry logic for rate limits.
+    Returns dict with success status and optional error.
+    """
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -110,14 +133,32 @@ async def send_email(email: EmailNotification):
                 }
             )
 
-            if response.status_code != 200:
-                raise HTTPException(status_code=500, detail="Failed to send email")
+            if response.status_code == 200:
+                return {"success": True, "id": response.json().get("id")}
 
-            return {"success": True, "id": response.json().get("id")}
+            # Handle rate limiting (429 Too Many Requests)
+            if response.status_code == 429 and retry_count < MAX_RETRIES:
+                backoff_time = RETRY_BACKOFF_BASE * (2 ** retry_count)
+                logger.warning(f"Rate limited by Resend, retrying in {backoff_time}s (attempt {retry_count + 1}/{MAX_RETRIES})")
+                await asyncio.sleep(backoff_time)
+                return await send_email_with_retry(email, retry_count + 1)
+
+            error_msg = f"Failed to send email: {response.status_code} - {response.text}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
     except Exception as e:
         logger.error(f"Email error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/email")
+async def send_email(email: EmailNotification):
+    """Send email via Resend"""
+    result = await send_email_with_retry(email)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to send email"))
+    return result
 
 
 @router.post("/contact")
@@ -319,10 +360,13 @@ async def send_weekly_updates_batch(auth_data: Dict = Depends(get_current_user))
         emails_sent = 0
         errors = []
 
-        for customer in customers_result.data:
+        for i, customer in enumerate(customers_result.data):
             try:
                 await send_weekly_update(customer["id"], auth_data)
                 emails_sent += 1
+                # Add delay between emails to avoid rate limiting
+                if i < len(customers_result.data) - 1:
+                    await asyncio.sleep(EMAIL_RATE_LIMIT_DELAY)
             except Exception as e:
                 errors.append({"customer_id": customer["id"], "error": str(e)})
 
@@ -369,7 +413,7 @@ async def cron_weekly_emails(cron_secret: str):
         emails_sent = 0
         errors = []
 
-        for customer in customers_result.data:
+        for i, customer in enumerate(customers_result.data):
             try:
                 # Get activity for this customer
                 conversations_result = supabase_admin.table("conversations").select(
@@ -416,8 +460,15 @@ async def cron_weekly_emails(cron_secret: str):
                     from_name="Voxtro"
                 )
 
-                await send_email(email)
-                emails_sent += 1
+                result = await send_email_with_retry(email)
+                if result.get("success"):
+                    emails_sent += 1
+                else:
+                    errors.append({"customer_id": customer["id"], "error": result.get("error")})
+
+                # Add delay between emails to avoid rate limiting
+                if i < len(customers_result.data) - 1:
+                    await asyncio.sleep(EMAIL_RATE_LIMIT_DELAY)
 
             except Exception as e:
                 errors.append({"customer_id": customer["id"], "error": str(e)})
