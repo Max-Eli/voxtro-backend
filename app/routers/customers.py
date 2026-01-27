@@ -932,13 +932,13 @@ async def sync_customer_whatsapp_conversations(auth_data: Dict = Depends(get_cur
                         if not conversation_id:
                             continue
 
-                        # Check if conversation already exists
+                        # Check if conversation already exists and has summary
                         existing = supabase_admin.table("whatsapp_conversations").select(
-                            "id"
+                            "id, summary"
                         ).eq("id", conversation_id).execute()
 
-                        if existing.data:
-                            continue  # Already synced
+                        is_new = not existing.data
+                        needs_summary = is_new or not existing.data[0].get("summary") if existing.data else True
 
                         # Fetch conversation details
                         conv_detail_response = await client.get(
@@ -1005,13 +1005,15 @@ async def sync_customer_whatsapp_conversations(auth_data: Dict = Depends(get_cur
                             conv_data, on_conflict="id"
                         ).execute()
 
-                        # Insert transcript messages
+                        # Insert transcript messages if they don't exist
+                        transcript_text = ""
                         if transcript:
                             existing_msgs = supabase_admin.table("whatsapp_messages").select(
-                                "id"
-                            ).eq("conversation_id", conversation_id).limit(1).execute()
+                                "id, role, content"
+                            ).eq("conversation_id", conversation_id).execute()
 
                             if not existing_msgs.data:
+                                # Insert new messages
                                 messages_to_insert = []
                                 for msg in transcript:
                                     role = msg.get("role", "unknown")
@@ -1031,61 +1033,62 @@ async def sync_customer_whatsapp_conversations(auth_data: Dict = Depends(get_cur
                                     supabase_admin.table("whatsapp_messages").insert(
                                         messages_to_insert
                                     ).execute()
-
-                                    # Build transcript text for AI summary
                                     transcript_text = "\n".join([f"{m['role']}: {m['content']}" for m in messages_to_insert])
+                            else:
+                                # Build transcript from existing messages
+                                transcript_text = "\n".join([f"{m['role']}: {m['content']}" for m in existing_msgs.data])
 
-                                    # Generate AI summary if we have transcript
-                                    if transcript_text.strip():
-                                        try:
-                                            from app.routers.whatsapp import generate_whatsapp_summary
-                                            summary = await generate_whatsapp_summary(conversation_id, transcript_text, owner_user_id)
+                        # Generate AI summary if needed (for new or existing conversations without summary)
+                        if needs_summary and transcript_text.strip():
+                            try:
+                                from app.routers.whatsapp import generate_whatsapp_summary
+                                summary = await generate_whatsapp_summary(conversation_id, transcript_text, owner_user_id)
 
-                                            if summary:
-                                                supabase_admin.table("whatsapp_conversations").update({
-                                                    "summary": summary.get("summary"),
-                                                    "key_points": summary.get("key_points"),
-                                                    "action_items": summary.get("action_items"),
-                                                    "sentiment": summary.get("sentiment"),
-                                                    "sentiment_notes": summary.get("sentiment_notes"),
-                                                    "conversation_outcome": summary.get("conversation_outcome"),
-                                                    "topics_discussed": summary.get("topics_discussed"),
-                                                    "lead_info": summary.get("lead_info")
-                                                }).eq("id", conversation_id).execute()
+                                if summary:
+                                    supabase_admin.table("whatsapp_conversations").update({
+                                        "summary": summary.get("summary"),
+                                        "key_points": summary.get("key_points"),
+                                        "action_items": summary.get("action_items"),
+                                        "sentiment": summary.get("sentiment"),
+                                        "sentiment_notes": summary.get("sentiment_notes"),
+                                        "conversation_outcome": summary.get("conversation_outcome"),
+                                        "topics_discussed": summary.get("topics_discussed"),
+                                        "lead_info": summary.get("lead_info")
+                                    }).eq("id", conversation_id).execute()
 
-                                                # Extract lead to leads table if we have contact info
-                                                lead_info = summary.get("lead_info", {})
-                                                if lead_info and (lead_info.get("name") or lead_info.get("email") or lead_info.get("phone")):
-                                                    # Check if lead already exists for this conversation
-                                                    existing_lead = supabase_admin.table("leads").select(
-                                                        "id"
-                                                    ).eq("conversation_id", conversation_id).limit(1).execute()
+                                    # Extract lead to leads table if we have contact info
+                                    lead_info = summary.get("lead_info", {})
+                                    if lead_info and (lead_info.get("name") or lead_info.get("email") or lead_info.get("phone")):
+                                        # Check if lead already exists for this conversation
+                                        existing_lead = supabase_admin.table("leads").select(
+                                            "id"
+                                        ).eq("conversation_id", conversation_id).limit(1).execute()
 
-                                                    if not existing_lead.data:
-                                                        # Get agent name for source_name
-                                                        agent_info = supabase_admin.table("whatsapp_agents").select(
-                                                            "name"
-                                                        ).eq("id", agent_id).single().execute()
-                                                        agent_name = agent_info.data.get("name") if agent_info.data else None
+                                        if not existing_lead.data:
+                                            # Get agent name for source_name
+                                            agent_info = supabase_admin.table("whatsapp_agents").select(
+                                                "name"
+                                            ).eq("id", agent_id).single().execute()
+                                            agent_name = agent_info.data.get("name") if agent_info.data else None
 
-                                                        supabase_admin.table("leads").insert({
-                                                            "conversation_id": conversation_id,
-                                                            "source_id": agent_id,
-                                                            "source_type": "whatsapp",
-                                                            "source_name": agent_name,
-                                                            "user_id": owner_user_id,
-                                                            "name": lead_info.get("name"),
-                                                            "email": lead_info.get("email"),
-                                                            "phone_number": lead_info.get("phone") or phone_number,
-                                                            "additional_data": {
-                                                                "company": lead_info.get("company"),
-                                                                "interest_level": lead_info.get("interest_level"),
-                                                                "notes": lead_info.get("notes")
-                                                            }
-                                                        }).execute()
-                                                        logger.info(f"Extracted lead from WhatsApp conversation {conversation_id}")
-                                        except Exception as ai_error:
-                                            logger.warning(f"Error generating AI summary for conversation {conversation_id}: {ai_error}")
+                                            supabase_admin.table("leads").insert({
+                                                "conversation_id": conversation_id,
+                                                "source_id": agent_id,
+                                                "source_type": "whatsapp",
+                                                "source_name": agent_name,
+                                                "user_id": owner_user_id,
+                                                "name": lead_info.get("name"),
+                                                "email": lead_info.get("email"),
+                                                "phone_number": lead_info.get("phone") or phone_number,
+                                                "additional_data": {
+                                                    "company": lead_info.get("company"),
+                                                    "interest_level": lead_info.get("interest_level"),
+                                                    "notes": lead_info.get("notes")
+                                                }
+                                            }).execute()
+                                            logger.info(f"Extracted lead from WhatsApp conversation {conversation_id}")
+                            except Exception as ai_error:
+                                logger.warning(f"Error generating AI summary for conversation {conversation_id}: {ai_error}")
 
                         total_synced += 1
 
