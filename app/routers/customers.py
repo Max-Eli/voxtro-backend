@@ -953,14 +953,29 @@ async def sync_customer_whatsapp_conversations(auth_data: Dict = Depends(get_cur
                         transcript = conv_detail.get("transcript", [])
                         analysis = conv_detail.get("analysis", {})
 
+                        # Get timestamps - ElevenLabs uses start_time_unix_secs (Unix timestamp)
+                        start_unix = metadata.get("start_time_unix_secs") or conv.get("start_time_unix_secs")
+                        call_duration = metadata.get("call_duration_secs") or conv.get("call_duration_secs") or 0
+
+                        # Convert Unix timestamp to ISO format
+                        started_at = None
+                        ended_at = None
+                        if start_unix:
+                            started_at = datetime.utcfromtimestamp(start_unix).isoformat() + "Z"
+                            if call_duration:
+                                ended_at = datetime.utcfromtimestamp(start_unix + call_duration).isoformat() + "Z"
+                        else:
+                            # Fallback to current time if no timestamp available
+                            started_at = datetime.utcnow().isoformat() + "Z"
+
                         # Upsert conversation
                         conv_data = {
                             "id": conversation_id,
                             "agent_id": agent_id,
                             "phone_number": metadata.get("phone_number") or conv.get("phone_number"),
                             "status": conv_detail.get("status", "done"),
-                            "started_at": metadata.get("start_time") or conv.get("start_time"),
-                            "ended_at": metadata.get("end_time") or conv.get("end_time")
+                            "started_at": started_at,
+                            "ended_at": ended_at
                         }
 
                         if analysis and analysis.get("transcript_summary"):

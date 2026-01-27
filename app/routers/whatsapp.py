@@ -539,9 +539,20 @@ async def fetch_whatsapp_conversations(
                 transcript = conv_detail.get("transcript", [])
                 analysis = conv_detail.get("analysis", {})
 
-                # Get timestamps from metadata or conversation
-                started_at = metadata.get("start_time") or conv.get("start_time") or conv.get("created_at")
-                ended_at = metadata.get("end_time") or conv.get("end_time")
+                # Get timestamps - ElevenLabs uses start_time_unix_secs (Unix timestamp in seconds)
+                start_unix = metadata.get("start_time_unix_secs") or conv.get("start_time_unix_secs")
+                call_duration = metadata.get("call_duration_secs") or conv.get("call_duration_secs") or 0
+
+                # Convert Unix timestamp to ISO format
+                started_at = None
+                ended_at = None
+                if start_unix:
+                    started_at = datetime.utcfromtimestamp(start_unix).isoformat() + "Z"
+                    if call_duration:
+                        ended_at = datetime.utcfromtimestamp(start_unix + call_duration).isoformat() + "Z"
+                else:
+                    # Fallback to current time if no timestamp available
+                    started_at = datetime.utcnow().isoformat() + "Z"
 
                 # Get phone number from metadata
                 phone_number = (
