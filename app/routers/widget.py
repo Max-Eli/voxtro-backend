@@ -157,11 +157,12 @@ async def get_widget_script(chatbot_id: str):
     """
     Serve widget JavaScript file (PUBLIC endpoint)
     This is the embed script that customers add to their websites
+    Must work on ANY website (multi-tenant) - CORS headers are critical
     """
     from app.config import get_settings
     settings = get_settings()
     frontend_url = settings.frontend_url
-    
+
     script = f"""
 (function() {{
     'use strict';
@@ -331,4 +332,15 @@ async def get_widget_script(chatbot_id: str):
 }})();
 """
 
-    return Response(content=script, media_type="application/javascript")
+    # Return script with explicit CORS headers for multi-tenant support
+    # This script must be loadable from ANY website
+    return Response(
+        content=script,
+        media_type="application/javascript",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        }
+    )
