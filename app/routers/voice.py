@@ -1,6 +1,6 @@
 """Voice assistant endpoints - VAPI integration"""
 from fastapi import APIRouter, HTTPException, Depends
-from typing import Dict
+from typing import Dict, Optional
 import logging
 import httpx
 
@@ -13,6 +13,7 @@ from app.models.voice import (
 )
 from app.middleware.auth import get_current_user
 from app.database import supabase_admin
+from app.routers.webhooks import generate_call_summary
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -531,91 +532,151 @@ async def fetch_vapi_calls(
             total_all_calls = len(vapi_calls)
             logger.info(f"Calls for assistant {vapi_assistant_id}: {len(vapi_calls)}")
 
-        # Find customer assigned to this assistant (check both old and new IDs)
-        assignment_result = supabase_admin.table("customer_assistant_assignments").select(
-            "customer_id"
-        ).eq("assistant_id", vapi_assistant_id).limit(1).maybe_single().execute()
-
-        # Also check with original ID if no match
-        if not assignment_result.data and vapi_assistant_id != assistant_id:
+            # Find customer assigned to this assistant (check both old and new IDs)
             assignment_result = supabase_admin.table("customer_assistant_assignments").select(
                 "customer_id"
-            ).eq("assistant_id", assistant_id).limit(1).maybe_single().execute()
+            ).eq("assistant_id", vapi_assistant_id).limit(1).maybe_single().execute()
 
-        customer_id = assignment_result.data["customer_id"] if assignment_result.data else None
+            # Also check with original ID if no match
+            if not assignment_result.data and vapi_assistant_id != assistant_id:
+                assignment_result = supabase_admin.table("customer_assistant_assignments").select(
+                    "customer_id"
+                ).eq("assistant_id", assistant_id).limit(1).maybe_single().execute()
 
-        # Sync calls to database
-        synced_count = 0
-        for call in vapi_calls:
-            # Calculate duration
-            duration_seconds = 0
-            if call.get("startedAt") and call.get("endedAt"):
-                from datetime import datetime
+            customer_id = assignment_result.data["customer_id"] if assignment_result.data else None
+
+            # Sync calls to database
+            synced_count = 0
+            transcript_synced_count = 0
+            summary_generated_count = 0
+
+            for call in vapi_calls:
+                call_id = call["id"]
+
+                # Calculate duration
+                duration_seconds = 0
+                if call.get("startedAt") and call.get("endedAt"):
+                    from datetime import datetime
+                    try:
+                        start_time = datetime.fromisoformat(call["startedAt"].replace("Z", "+00:00"))
+                        end_time = datetime.fromisoformat(call["endedAt"].replace("Z", "+00:00"))
+                        duration_seconds = int((end_time - start_time).total_seconds())
+                    except Exception as e:
+                        logger.warning(f"Error calculating duration: {e}")
+
+                call_data = {
+                    "id": call_id,
+                    "assistant_id": vapi_assistant_id,  # Use the correct VAPI ID
+                    "customer_id": customer_id,
+                    "phone_number": call.get("customer", {}).get("number") or call.get("phoneNumber", {}).get("number"),
+                    "started_at": call.get("startedAt"),
+                    "ended_at": call.get("endedAt"),
+                    "duration_seconds": duration_seconds,
+                    "status": call.get("status", "completed"),
+                    "call_type": call.get("type", "inbound"),
+                }
+
+                # Upsert call record
                 try:
-                    start_time = datetime.fromisoformat(call["startedAt"].replace("Z", "+00:00"))
-                    end_time = datetime.fromisoformat(call["endedAt"].replace("Z", "+00:00"))
-                    duration_seconds = int((end_time - start_time).total_seconds())
-                except Exception as e:
-                    logger.warning(f"Error calculating duration: {e}")
+                    supabase_admin.table("voice_assistant_calls").upsert(
+                        call_data,
+                        on_conflict="id"
+                    ).execute()
+                    synced_count += 1
 
-            call_data = {
-                "id": call["id"],
-                "assistant_id": vapi_assistant_id,  # Use the correct VAPI ID
-                "customer_id": customer_id,
-                "phone_number": call.get("customer", {}).get("number") or call.get("phoneNumber", {}).get("number"),
-                "started_at": call.get("startedAt"),
-                "ended_at": call.get("endedAt"),
-                "duration_seconds": duration_seconds,
-                "status": call.get("status", "completed"),
-                "call_type": call.get("type", "inbound"),
-            }
+                    # Check if we already have transcripts for this call
+                    existing_transcripts = supabase_admin.table("voice_assistant_transcripts").select(
+                        "id"
+                    ).eq("call_id", call_id).limit(1).execute()
 
-            # Upsert call record
-            try:
-                supabase_admin.table("voice_assistant_calls").upsert(
-                    call_data,
-                    on_conflict="id"
-                ).execute()
-                synced_count += 1
+                    # Get artifact from list response or fetch individual call details
+                    artifact = call.get("artifact", {})
+                    messages = artifact.get("messages", [])
 
-                # Sync transcript if available
-                artifact = call.get("artifact", {})
-                messages = artifact.get("messages", [])
+                    # If no messages in list response and no existing transcripts, fetch individual call details
+                    if not messages and not existing_transcripts.data:
+                        logger.info(f"Fetching individual call details for {call_id}")
+                        try:
+                            call_detail_response = await client.get(
+                                f"https://api.vapi.ai/call/{call_id}",
+                                headers={"Authorization": f"Bearer {api_key}"}
+                            )
+                            if call_detail_response.status_code == 200:
+                                call_detail = call_detail_response.json()
+                                artifact = call_detail.get("artifact", {})
+                                messages = artifact.get("messages", [])
+                                logger.info(f"Got {len(messages)} messages from call details for {call_id}")
+                        except Exception as detail_error:
+                            logger.warning(f"Failed to fetch call details for {call_id}: {detail_error}")
 
-                for msg in messages:
-                    role = "assistant" if msg.get("role") == "bot" else msg.get("role")
-                    content = msg.get("message")
+                    # Sync transcript messages
+                    transcript_text = ""
+                    for msg in messages:
+                        role = "assistant" if msg.get("role") == "bot" else msg.get("role")
+                        content = msg.get("message")
 
-                    if role in ("user", "assistant") and content:
-                        # Check if transcript already exists
-                        existing = supabase_admin.table("voice_assistant_transcripts").select(
+                        if role in ("user", "assistant") and content:
+                            transcript_text += f"{role}: {content}\n"
+
+                            # Check if transcript already exists
+                            existing = supabase_admin.table("voice_assistant_transcripts").select(
+                                "id"
+                            ).eq("call_id", call_id).eq("content", content).eq("role", role).maybe_single().execute()
+
+                            if not existing.data:
+                                supabase_admin.table("voice_assistant_transcripts").insert({
+                                    "call_id": call_id,
+                                    "role": role,
+                                    "content": content,
+                                    "timestamp": msg.get("time") or call.get("startedAt"),
+                                }).execute()
+                                transcript_synced_count += 1
+
+                    # Sync recording if available
+                    recording_url = artifact.get("recordingUrl")
+                    if recording_url:
+                        existing_recording = supabase_admin.table("voice_assistant_recordings").select(
                             "id"
-                        ).eq("call_id", call["id"]).eq("content", content).eq("role", role).maybe_single().execute()
+                        ).eq("call_id", call_id).maybe_single().execute()
 
-                        if not existing.data:
-                            supabase_admin.table("voice_assistant_transcripts").insert({
-                                "call_id": call["id"],
-                                "role": role,
-                                "content": content,
-                                "timestamp": msg.get("time") or call.get("startedAt"),
+                        if not existing_recording.data:
+                            supabase_admin.table("voice_assistant_recordings").insert({
+                                "call_id": call_id,
+                                "recording_url": recording_url,
                             }).execute()
 
-                # Sync recording if available
-                recording_url = artifact.get("recordingUrl")
-                if recording_url:
-                    existing_recording = supabase_admin.table("voice_assistant_recordings").select(
-                        "id"
-                    ).eq("call_id", call["id"]).maybe_single().execute()
+                    # Generate AI summary if we have transcript but no existing summary
+                    if transcript_text:
+                        # Check if call already has a summary
+                        call_record = supabase_admin.table("voice_assistant_calls").select(
+                            "summary"
+                        ).eq("id", call_id).single().execute()
 
-                    if not existing_recording.data:
-                        supabase_admin.table("voice_assistant_recordings").insert({
-                            "call_id": call["id"],
-                            "recording_url": recording_url,
-                        }).execute()
+                        if call_record.data and not call_record.data.get("summary"):
+                            logger.info(f"Generating AI summary for call {call_id}")
+                            try:
+                                summary = await generate_call_summary(call_id, transcript_text, owner_user_id)
+                                if summary:
+                                    supabase_admin.table("voice_assistant_calls").update({
+                                        "summary": summary.get("summary"),
+                                        "key_points": summary.get("key_points"),
+                                        "action_items": summary.get("action_items"),
+                                        "sentiment": summary.get("sentiment"),
+                                        "sentiment_notes": summary.get("sentiment_notes"),
+                                        "call_outcome": summary.get("call_outcome"),
+                                        "topics_discussed": summary.get("topics_discussed"),
+                                        "lead_info": summary.get("lead_info")
+                                    }).eq("id", call_id).execute()
+                                    summary_generated_count += 1
+                                    logger.info(f"Generated summary for call {call_id}")
+                            except Exception as summary_error:
+                                logger.warning(f"Failed to generate summary for call {call_id}: {summary_error}")
 
-            except Exception as e:
-                logger.error(f"Error syncing call {call['id']}: {e}")
-                continue
+                except Exception as e:
+                    logger.error(f"Error syncing call {call_id}: {e}")
+                    continue
+
+            logger.info(f"Sync complete: {synced_count} calls, {transcript_synced_count} transcript messages, {summary_generated_count} summaries generated")
 
         return FetchVapiCallsResponse(
             success=True,
