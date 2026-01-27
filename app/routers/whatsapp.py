@@ -676,6 +676,38 @@ async def fetch_whatsapp_conversations(
                                 summaries_generated += 1
                                 logger.info(f"Generated summary for conversation {conversation_id}")
 
+                                # Extract lead to leads table if we have contact info
+                                lead_info = summary.get("lead_info", {})
+                                if lead_info and (lead_info.get("name") or lead_info.get("email") or lead_info.get("phone")):
+                                    # Check if lead already exists for this conversation
+                                    existing_lead = supabase_admin.table("leads").select(
+                                        "id"
+                                    ).eq("conversation_id", conversation_id).limit(1).execute()
+
+                                    if not existing_lead.data:
+                                        # Get agent name for source_name
+                                        agent_info = supabase_admin.table("whatsapp_agents").select(
+                                            "name"
+                                        ).eq("id", agent_id).single().execute()
+                                        agent_name = agent_info.data.get("name") if agent_info.data else None
+
+                                        supabase_admin.table("leads").insert({
+                                            "conversation_id": conversation_id,
+                                            "source_id": agent_id,
+                                            "source_type": "whatsapp",
+                                            "source_name": agent_name,
+                                            "user_id": user_id,
+                                            "name": lead_info.get("name"),
+                                            "email": lead_info.get("email"),
+                                            "phone_number": lead_info.get("phone") or phone_number,
+                                            "additional_data": {
+                                                "company": lead_info.get("company"),
+                                                "interest_level": lead_info.get("interest_level"),
+                                                "notes": lead_info.get("notes")
+                                            }
+                                        }).execute()
+                                        logger.info(f"Extracted lead from WhatsApp conversation {conversation_id}")
+
         return {
             "success": True,
             "synced": synced_count,
