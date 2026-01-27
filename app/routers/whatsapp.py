@@ -456,3 +456,215 @@ async def regenerate_whatsapp_summary(
     except Exception as e:
         logger.error(f"Regenerate WhatsApp summary error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{agent_id}/fetch-conversations")
+async def fetch_whatsapp_conversations(
+    agent_id: str,
+    auth_data: Dict = Depends(get_current_user)
+):
+    """
+    Fetch conversations from ElevenLabs for a WhatsApp agent and sync to database.
+    This fetches the list of conversations and their transcripts.
+    """
+    try:
+        user_id = auth_data["user_id"]
+
+        # Verify agent belongs to user
+        agent_result = supabase_admin.table("whatsapp_agents").select(
+            "id, user_id"
+        ).eq("id", agent_id).eq("user_id", user_id).single().execute()
+
+        if not agent_result.data:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        # Get ElevenLabs connection
+        conn_result = supabase_admin.table("elevenlabs_connections").select(
+            "api_key"
+        ).eq("user_id", user_id).eq("is_active", True).single().execute()
+
+        if not conn_result.data:
+            raise HTTPException(status_code=404, detail="ElevenLabs connection not found")
+
+        api_key = conn_result.data["api_key"]
+
+        synced_count = 0
+        new_conversations = 0
+        summaries_generated = 0
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Fetch conversations list from ElevenLabs
+            conv_list_response = await client.get(
+                "https://api.elevenlabs.io/v1/convai/conversations",
+                headers={"xi-api-key": api_key},
+                params={"agent_id": agent_id}
+            )
+
+            if conv_list_response.status_code != 200:
+                logger.error(f"Failed to fetch conversations: {conv_list_response.status_code} - {conv_list_response.text[:200]}")
+                raise HTTPException(status_code=500, detail="Failed to fetch conversations from ElevenLabs")
+
+            conv_list = conv_list_response.json()
+            conversations = conv_list.get("conversations", [])
+
+            logger.info(f"Found {len(conversations)} conversations for agent {agent_id}")
+
+            for conv in conversations:
+                conversation_id = conv.get("conversation_id")
+                if not conversation_id:
+                    continue
+
+                synced_count += 1
+
+                # Check if conversation already exists in database
+                existing = supabase_admin.table("whatsapp_conversations").select(
+                    "id, summary"
+                ).eq("id", conversation_id).execute()
+
+                # Fetch individual conversation details to get transcript
+                conv_detail_response = await client.get(
+                    f"https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}",
+                    headers={"xi-api-key": api_key}
+                )
+
+                if conv_detail_response.status_code != 200:
+                    logger.warning(f"Failed to fetch conversation {conversation_id}: {conv_detail_response.status_code}")
+                    continue
+
+                conv_detail = conv_detail_response.json()
+
+                # Extract conversation data
+                status = conv_detail.get("status", "done")
+                metadata = conv_detail.get("metadata", {})
+                transcript = conv_detail.get("transcript", [])
+                analysis = conv_detail.get("analysis", {})
+
+                # Get timestamps from metadata or conversation
+                started_at = metadata.get("start_time") or conv.get("start_time") or conv.get("created_at")
+                ended_at = metadata.get("end_time") or conv.get("end_time")
+
+                # Get phone number from metadata
+                phone_number = (
+                    metadata.get("phone_number") or
+                    metadata.get("customer_phone") or
+                    conv.get("phone_number")
+                )
+
+                # Duration in seconds
+                duration = metadata.get("call_duration_secs") or 0
+
+                # Upsert conversation record
+                conv_data = {
+                    "id": conversation_id,
+                    "agent_id": agent_id,
+                    "phone_number": phone_number,
+                    "status": status,
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                    "duration_seconds": duration
+                }
+
+                # Add analysis data if available from ElevenLabs
+                if analysis:
+                    if analysis.get("transcript_summary"):
+                        conv_data["summary"] = analysis.get("transcript_summary")
+                    if analysis.get("evaluation_criteria_results"):
+                        conv_data["evaluation_results"] = analysis.get("evaluation_criteria_results")
+                    if analysis.get("data_collection_results"):
+                        conv_data["data_collection"] = analysis.get("data_collection_results")
+
+                supabase_admin.table("whatsapp_conversations").upsert(
+                    conv_data, on_conflict="id"
+                ).execute()
+
+                if not existing.data:
+                    new_conversations += 1
+
+                # Process transcript messages
+                if transcript:
+                    # Check if we already have messages for this conversation
+                    existing_messages = supabase_admin.table("whatsapp_messages").select(
+                        "id"
+                    ).eq("conversation_id", conversation_id).limit(1).execute()
+
+                    if not existing_messages.data:
+                        # Insert all transcript messages
+                        transcript_text = ""
+                        messages_to_insert = []
+
+                        for msg in transcript:
+                            # ElevenLabs transcript format
+                            role = msg.get("role", "unknown")
+                            # Map ElevenLabs roles to standard roles
+                            if role == "agent":
+                                role = "assistant"
+                            elif role == "user":
+                                role = "user"
+
+                            content = msg.get("message", "") or msg.get("text", "") or msg.get("content", "")
+                            timestamp = msg.get("time_in_call_secs") or msg.get("timestamp")
+
+                            # Convert time_in_call_secs to timestamp if needed
+                            if isinstance(timestamp, (int, float)) and started_at:
+                                try:
+                                    from datetime import timedelta
+                                    start_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+                                    msg_dt = start_dt + timedelta(seconds=timestamp)
+                                    timestamp = msg_dt.isoformat()
+                                except:
+                                    timestamp = datetime.utcnow().isoformat()
+                            elif not timestamp:
+                                timestamp = datetime.utcnow().isoformat()
+
+                            if content:
+                                transcript_text += f"{role}: {content}\n"
+                                messages_to_insert.append({
+                                    "conversation_id": conversation_id,
+                                    "role": role,
+                                    "content": content,
+                                    "timestamp": timestamp if isinstance(timestamp, str) else datetime.utcnow().isoformat()
+                                })
+
+                        # Batch insert messages
+                        if messages_to_insert:
+                            supabase_admin.table("whatsapp_messages").insert(
+                                messages_to_insert
+                            ).execute()
+                            logger.info(f"Inserted {len(messages_to_insert)} messages for conversation {conversation_id}")
+
+                        # Generate AI summary if we have transcript and no existing summary
+                        conv_record = supabase_admin.table("whatsapp_conversations").select(
+                            "summary"
+                        ).eq("id", conversation_id).single().execute()
+
+                        if transcript_text.strip() and (not conv_record.data or not conv_record.data.get("summary")):
+                            summary = await generate_whatsapp_summary(conversation_id, transcript_text, user_id)
+
+                            if summary:
+                                supabase_admin.table("whatsapp_conversations").update({
+                                    "summary": summary.get("summary"),
+                                    "key_points": summary.get("key_points"),
+                                    "action_items": summary.get("action_items"),
+                                    "sentiment": summary.get("sentiment"),
+                                    "sentiment_notes": summary.get("sentiment_notes"),
+                                    "conversation_outcome": summary.get("conversation_outcome"),
+                                    "topics_discussed": summary.get("topics_discussed"),
+                                    "lead_info": summary.get("lead_info")
+                                }).eq("id", conversation_id).execute()
+
+                                summaries_generated += 1
+                                logger.info(f"Generated summary for conversation {conversation_id}")
+
+        return {
+            "success": True,
+            "synced": synced_count,
+            "new_conversations": new_conversations,
+            "summaries_generated": summaries_generated,
+            "message": f"Synced {synced_count} conversations, {new_conversations} new, {summaries_generated} summaries generated"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Fetch WhatsApp conversations error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
