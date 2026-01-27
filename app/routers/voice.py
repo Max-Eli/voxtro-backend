@@ -7,7 +7,9 @@ import httpx
 from app.models.voice import (
     VoiceAssistantSyncResponse,
     VoiceAssistantUpdate,
-    VoiceConnectionValidation
+    VoiceConnectionValidation,
+    FetchVapiCallsRequest,
+    FetchVapiCallsResponse
 )
 from app.middleware.auth import get_current_user
 from app.database import supabase_admin
@@ -342,4 +344,157 @@ async def summarize_call(
         raise
     except Exception as e:
         logger.error(f"Summarize call error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/fetch-calls", response_model=FetchVapiCallsResponse)
+async def fetch_vapi_calls(
+    request: FetchVapiCallsRequest
+):
+    """
+    Fetch and sync calls from VAPI API for a specific assistant.
+    Used by customer portal to get call history.
+
+    This endpoint looks up the assistant's owner and uses their VAPI API key
+    to fetch calls, then syncs them to the database.
+    """
+    try:
+        assistant_id = request.assistant_id
+
+        # Get the assistant to find the owner (user_id)
+        assistant_result = supabase_admin.table("voice_assistants").select(
+            "user_id, name"
+        ).eq("id", assistant_id).single().execute()
+
+        if not assistant_result.data:
+            logger.error(f"Assistant not found: {assistant_id}")
+            raise HTTPException(status_code=404, detail="Voice assistant not found")
+
+        assistant_data = assistant_result.data
+        owner_user_id = assistant_data["user_id"]
+        assistant_name = assistant_data.get("name", "Unknown")
+
+        # Get the owner's VAPI API key from voice_connections
+        conn_result = supabase_admin.table("voice_connections").select(
+            "api_key"
+        ).eq("user_id", owner_user_id).eq("is_active", True).maybeSingle().execute()
+
+        if not conn_result.data:
+            logger.error(f"No active voice connection found for user: {owner_user_id}")
+            raise HTTPException(
+                status_code=404,
+                detail="No active voice connection found for this assistant owner"
+            )
+
+        api_key = conn_result.data["api_key"]
+
+        # Fetch calls from VAPI API for this assistant
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"https://api.vapi.ai/call?assistantId={assistant_id}&limit=100",
+                headers={"Authorization": f"Bearer {api_key}"}
+            )
+
+            if response.status_code != 200:
+                logger.error(f"VAPI API error: {response.status_code} - {response.text}")
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to fetch calls from voice service"
+                )
+
+            vapi_calls = response.json()
+
+        logger.info(f"Fetched {len(vapi_calls)} calls from VAPI for assistant {assistant_id}")
+
+        # Find customer assigned to this assistant
+        assignment_result = supabase_admin.table("customer_assistant_assignments").select(
+            "customer_id"
+        ).eq("assistant_id", assistant_id).limit(1).maybeSingle().execute()
+
+        customer_id = assignment_result.data["customer_id"] if assignment_result.data else None
+
+        # Sync calls to database
+        synced_count = 0
+        for call in vapi_calls:
+            # Calculate duration
+            duration_seconds = 0
+            if call.get("startedAt") and call.get("endedAt"):
+                from datetime import datetime
+                try:
+                    start_time = datetime.fromisoformat(call["startedAt"].replace("Z", "+00:00"))
+                    end_time = datetime.fromisoformat(call["endedAt"].replace("Z", "+00:00"))
+                    duration_seconds = int((end_time - start_time).total_seconds())
+                except Exception as e:
+                    logger.warning(f"Error calculating duration: {e}")
+
+            call_data = {
+                "id": call["id"],
+                "assistant_id": assistant_id,
+                "customer_id": customer_id,
+                "phone_number": call.get("customer", {}).get("number") or call.get("phoneNumber", {}).get("number"),
+                "started_at": call.get("startedAt"),
+                "ended_at": call.get("endedAt"),
+                "duration_seconds": duration_seconds,
+                "status": call.get("status", "completed"),
+                "call_type": call.get("type", "inbound"),
+            }
+
+            # Upsert call record
+            try:
+                supabase_admin.table("voice_assistant_calls").upsert(
+                    call_data,
+                    on_conflict="id"
+                ).execute()
+                synced_count += 1
+
+                # Sync transcript if available
+                artifact = call.get("artifact", {})
+                messages = artifact.get("messages", [])
+
+                for msg in messages:
+                    role = "assistant" if msg.get("role") == "bot" else msg.get("role")
+                    content = msg.get("message")
+
+                    if role in ("user", "assistant") and content:
+                        # Check if transcript already exists
+                        existing = supabase_admin.table("voice_assistant_transcripts").select(
+                            "id"
+                        ).eq("call_id", call["id"]).eq("content", content).eq("role", role).maybeSingle().execute()
+
+                        if not existing.data:
+                            supabase_admin.table("voice_assistant_transcripts").insert({
+                                "call_id": call["id"],
+                                "role": role,
+                                "content": content,
+                                "timestamp": msg.get("time") or call.get("startedAt"),
+                            }).execute()
+
+                # Sync recording if available
+                recording_url = artifact.get("recordingUrl")
+                if recording_url:
+                    existing_recording = supabase_admin.table("voice_assistant_recordings").select(
+                        "id"
+                    ).eq("call_id", call["id"]).maybeSingle().execute()
+
+                    if not existing_recording.data:
+                        supabase_admin.table("voice_assistant_recordings").insert({
+                            "call_id": call["id"],
+                            "recording_url": recording_url,
+                        }).execute()
+
+            except Exception as e:
+                logger.error(f"Error syncing call {call['id']}: {e}")
+                continue
+
+        return FetchVapiCallsResponse(
+            success=True,
+            total_from_vapi=len(vapi_calls),
+            synced_count=synced_count,
+            assistant_name=assistant_name
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching VAPI calls: {e}")
         raise HTTPException(status_code=500, detail=str(e))

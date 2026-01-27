@@ -36,3 +36,16 @@ class VoiceConnectionValidation(BaseModel):
     """Validate voice connection"""
     api_key: str
     org_id: Optional[str] = None
+
+
+class FetchVapiCallsRequest(BaseModel):
+    """Request to fetch calls from VAPI for a specific assistant"""
+    assistant_id: str
+
+
+class FetchVapiCallsResponse(BaseModel):
+    """Response from fetching VAPI calls"""
+    success: bool
+    total_from_vapi: int
+    synced_count: int
+    assistant_name: Optional[str] = None
