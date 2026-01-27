@@ -418,6 +418,10 @@ async def fetch_vapi_calls(
             vapi_calls = response.json()
             logger.info(f"Fetched {len(vapi_calls)} calls from VAPI for assistant {assistant_id}")
 
+            # Debug info
+            total_all_calls = None
+            assistant_ids_in_vapi = None
+
             # If no calls found with filter, try fetching all calls and filter manually
             if len(vapi_calls) == 0:
                 logger.info("No calls found with assistantId filter, trying without filter...")
@@ -427,11 +431,12 @@ async def fetch_vapi_calls(
                 )
                 if all_response.status_code == 200:
                     all_calls = all_response.json()
-                    logger.info(f"Total calls in VAPI account: {len(all_calls)}")
-                    # Log the assistant IDs from the calls
+                    total_all_calls = len(all_calls)
+                    logger.info(f"Total calls in VAPI account: {total_all_calls}")
+                    # Get the assistant IDs from the calls
                     if all_calls:
-                        assistant_ids_in_calls = set(c.get("assistantId") for c in all_calls if c.get("assistantId"))
-                        logger.info(f"Assistant IDs in calls: {assistant_ids_in_calls}")
+                        assistant_ids_in_vapi = list(set(c.get("assistantId") for c in all_calls if c.get("assistantId")))
+                        logger.info(f"Assistant IDs in calls: {assistant_ids_in_vapi}")
                     # Filter for the specific assistant
                     vapi_calls = [c for c in all_calls if c.get("assistantId") == assistant_id]
                     logger.info(f"Calls matching assistant {assistant_id}: {len(vapi_calls)}")
@@ -520,7 +525,9 @@ async def fetch_vapi_calls(
             success=True,
             total_from_vapi=len(vapi_calls),
             synced_count=synced_count,
-            assistant_name=assistant_name
+            assistant_name=assistant_name,
+            total_all_calls=total_all_calls,
+            assistant_ids_in_vapi=assistant_ids_in_vapi
         )
 
     except HTTPException:
