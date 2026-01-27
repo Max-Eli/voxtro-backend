@@ -381,24 +381,24 @@ async def fetch_vapi_calls(
         if assistant_org_id:
             conn_result = supabase_admin.table("voice_connections").select(
                 "api_key"
-            ).eq("user_id", owner_user_id).eq("org_id", assistant_org_id).maybe_single().execute()
+            ).eq("user_id", owner_user_id).eq("org_id", assistant_org_id).eq("is_active", True).limit(1).execute()
             logger.info(f"Looking for connection with org_id={assistant_org_id}: found={bool(conn_result.data)}")
 
         # Fallback to active connection if no org_id match
         if not conn_result or not conn_result.data:
             conn_result = supabase_admin.table("voice_connections").select(
                 "api_key"
-            ).eq("user_id", owner_user_id).eq("is_active", True).maybe_single().execute()
+            ).eq("user_id", owner_user_id).eq("is_active", True).limit(1).execute()
             logger.info(f"Using active connection for user {owner_user_id}: found={bool(conn_result.data)}")
 
-        if not conn_result.data:
+        if not conn_result.data or len(conn_result.data) == 0:
             logger.error(f"No voice connection found for user: {owner_user_id}")
             raise HTTPException(
                 status_code=404,
                 detail="No active voice connection found for this assistant owner"
             )
 
-        api_key = conn_result.data["api_key"]
+        api_key = conn_result.data[0]["api_key"]
 
         # Fetch calls from VAPI API for this assistant
         async with httpx.AsyncClient(timeout=30.0) as client:
