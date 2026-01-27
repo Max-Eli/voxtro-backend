@@ -4,6 +4,7 @@ from typing import Dict, Optional, Any
 import logging
 import httpx
 import json
+import uuid
 from datetime import datetime
 
 from app.models.whatsapp import WhatsAppAgentSyncResponse, WhatsAppAgentUpdate, ElevenLabsConnectionValidation
@@ -626,6 +627,7 @@ async def fetch_whatsapp_conversations(
                             if content:
                                 transcript_text += f"{role}: {content}\n"
                                 messages_to_insert.append({
+                                    "id": str(uuid.uuid4()),
                                     "conversation_id": conversation_id,
                                     "role": role,
                                     "content": content,

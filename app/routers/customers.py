@@ -999,7 +999,9 @@ async def sync_customer_whatsapp_conversations(auth_data: Dict = Depends(get_cur
                                         role = "assistant"
                                     content = msg.get("message", "") or msg.get("text", "")
                                     if content:
+                                        import uuid
                                         messages_to_insert.append({
+                                            "id": str(uuid.uuid4()),
                                             "conversation_id": conversation_id,
                                             "role": role,
                                             "content": content,
