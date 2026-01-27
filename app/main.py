@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from app.middleware.cors import setup_cors
 from app.middleware.error_handler import ErrorHandlerMiddleware
+from contextlib import asynccontextmanager
 import logging
 
 # Configure logging
@@ -13,13 +14,60 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
+# APScheduler setup
+scheduler = None
+
+def setup_scheduler():
+    """Initialize the background scheduler for automatic syncs"""
+    global scheduler
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from app.routers.admin import run_scheduled_sync
+
+        scheduler = BackgroundScheduler()
+
+        # Run sync every 5 minutes
+        scheduler.add_job(
+            run_scheduled_sync,
+            'interval',
+            minutes=5,
+            id='sync_all_conversations',
+            name='Sync all conversations and generate AI summaries',
+            replace_existing=True
+        )
+
+        scheduler.start()
+        logger.info("Background scheduler started - syncing every 5 minutes")
+    except Exception as e:
+        logger.error(f"Failed to start scheduler: {e}")
+
+
+def shutdown_scheduler():
+    """Shutdown the scheduler gracefully"""
+    global scheduler
+    if scheduler:
+        scheduler.shutdown(wait=False)
+        logger.info("Background scheduler stopped")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events"""
+    # Startup
+    setup_scheduler()
+    yield
+    # Shutdown
+    shutdown_scheduler()
+
+
+# Create FastAPI app with lifespan
 app = FastAPI(
     title="Voxtro API",
     description="AI-powered customer engagement platform API",
     version="2.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
 
 # Setup CORS
@@ -32,7 +80,7 @@ app.add_middleware(ErrorHandlerMiddleware)
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "service": "voxtro-backend"}
+    return {"status": "healthy", "service": "voxtro-backend", "scheduler": "running" if scheduler and scheduler.running else "stopped"}
 
 @app.get("/")
 async def root():
@@ -44,7 +92,7 @@ async def root():
     }
 
 # Import and include routers
-from app.routers import chat, widget, voice, whatsapp, webhooks, notifications, customers, forms, leads, openai_connection
+from app.routers import chat, widget, voice, whatsapp, webhooks, notifications, customers, forms, leads, openai_connection, admin
 
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(widget.router, prefix="/api/widget", tags=["Widget"])
@@ -56,6 +104,7 @@ app.include_router(customers.router, prefix="/api/customers", tags=["Customers"]
 app.include_router(forms.router, prefix="/api/forms", tags=["Forms"])
 app.include_router(leads.router, prefix="/api/leads", tags=["Leads"])
 app.include_router(openai_connection.router, prefix="/api/openai", tags=["OpenAI Connection"])
+app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 
 if __name__ == "__main__":
     import uvicorn
