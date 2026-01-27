@@ -390,6 +390,7 @@ async def fetch_vapi_calls(
 
         # Fetch calls from VAPI API for this assistant
         async with httpx.AsyncClient(timeout=30.0) as client:
+            # First try with assistantId filter
             response = await client.get(
                 f"https://api.vapi.ai/call?assistantId={assistant_id}&limit=100",
                 headers={"Authorization": f"Bearer {api_key}"}
@@ -403,8 +404,25 @@ async def fetch_vapi_calls(
                 )
 
             vapi_calls = response.json()
+            logger.info(f"Fetched {len(vapi_calls)} calls from VAPI for assistant {assistant_id}")
 
-        logger.info(f"Fetched {len(vapi_calls)} calls from VAPI for assistant {assistant_id}")
+            # If no calls found with filter, try fetching all calls and filter manually
+            if len(vapi_calls) == 0:
+                logger.info("No calls found with assistantId filter, trying without filter...")
+                all_response = await client.get(
+                    "https://api.vapi.ai/call?limit=100",
+                    headers={"Authorization": f"Bearer {api_key}"}
+                )
+                if all_response.status_code == 200:
+                    all_calls = all_response.json()
+                    logger.info(f"Total calls in VAPI account: {len(all_calls)}")
+                    # Log the assistant IDs from the calls
+                    if all_calls:
+                        assistant_ids_in_calls = set(c.get("assistantId") for c in all_calls if c.get("assistantId"))
+                        logger.info(f"Assistant IDs in calls: {assistant_ids_in_calls}")
+                    # Filter for the specific assistant
+                    vapi_calls = [c for c in all_calls if c.get("assistantId") == assistant_id]
+                    logger.info(f"Calls matching assistant {assistant_id}: {len(vapi_calls)}")
 
         # Find customer assigned to this assistant
         assignment_result = supabase_admin.table("customer_assistant_assignments").select(
