@@ -361,9 +361,9 @@ async def fetch_vapi_calls(
     try:
         assistant_id = request.assistant_id
 
-        # Get the assistant to find the owner (user_id)
+        # Get the assistant to find the owner (user_id) and org_id
         assistant_result = supabase_admin.table("voice_assistants").select(
-            "user_id, name"
+            "user_id, name, org_id"
         ).eq("id", assistant_id).single().execute()
 
         if not assistant_result.data:
@@ -373,14 +373,26 @@ async def fetch_vapi_calls(
         assistant_data = assistant_result.data
         owner_user_id = assistant_data["user_id"]
         assistant_name = assistant_data.get("name", "Unknown")
+        assistant_org_id = assistant_data.get("org_id")
 
-        # Get the owner's VAPI API key from voice_connections
-        conn_result = supabase_admin.table("voice_connections").select(
-            "api_key"
-        ).eq("user_id", owner_user_id).eq("is_active", True).maybe_single().execute()
+        # Get the VAPI API key from voice_connections
+        # First try to match by org_id (for multi-org users), then fallback to user_id + is_active
+        conn_result = None
+        if assistant_org_id:
+            conn_result = supabase_admin.table("voice_connections").select(
+                "api_key"
+            ).eq("user_id", owner_user_id).eq("org_id", assistant_org_id).maybe_single().execute()
+            logger.info(f"Looking for connection with org_id={assistant_org_id}: found={bool(conn_result.data)}")
+
+        # Fallback to active connection if no org_id match
+        if not conn_result or not conn_result.data:
+            conn_result = supabase_admin.table("voice_connections").select(
+                "api_key"
+            ).eq("user_id", owner_user_id).eq("is_active", True).maybe_single().execute()
+            logger.info(f"Using active connection for user {owner_user_id}: found={bool(conn_result.data)}")
 
         if not conn_result.data:
-            logger.error(f"No active voice connection found for user: {owner_user_id}")
+            logger.error(f"No voice connection found for user: {owner_user_id}")
             raise HTTPException(
                 status_code=404,
                 detail="No active voice connection found for this assistant owner"
