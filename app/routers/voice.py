@@ -28,13 +28,17 @@ async def sync_voice_assistants(
     This endpoint syncs assistants from ALL voice connections for the user,
     not just the active one. Each assistant is stored with its proper org_id
     to maintain organization separation.
+
+    Also updates the voice_connections.org_id to match the VAPI org ID for
+    proper filtering in the frontend.
     """
     try:
         user_id = auth_data["user_id"]
 
         # Get ALL VAPI connections for this user (not just active)
+        # Include the connection ID so we can update org_id if needed
         all_connections = supabase_admin.table("voice_connections").select(
-            "api_key, org_name, org_id"
+            "id, api_key, org_name, org_id"
         ).eq("user_id", user_id).execute()
 
         if not all_connections.data or len(all_connections.data) == 0:
@@ -47,8 +51,10 @@ async def sync_voice_assistants(
         async with httpx.AsyncClient(timeout=60.0) as client:
             # Sync assistants from EACH VAPI connection
             for conn in all_connections.data:
+                conn_id = conn["id"]
                 api_key = conn["api_key"]
                 org_name = conn.get("org_name", "Unknown")
+                stored_org_id = conn.get("org_id")
 
                 logger.info(f"Fetching assistants from VAPI org: {org_name}")
 
@@ -64,10 +70,23 @@ async def sync_voice_assistants(
                 assistants = response.json()
                 logger.info(f"Found {len(assistants)} assistants in VAPI org: {org_name}")
 
+                # Get the VAPI org ID from the first assistant (they all belong to the same org)
+                vapi_org_id = None
+                if assistants and len(assistants) > 0:
+                    vapi_org_id = assistants[0].get("orgId")
+
+                # Update voice_connection.org_id if it's different or NULL
+                if vapi_org_id and vapi_org_id != stored_org_id:
+                    logger.info(f"Updating connection {conn_id} org_id from '{stored_org_id}' to '{vapi_org_id}'")
+                    supabase_admin.table("voice_connections").update({
+                        "org_id": vapi_org_id
+                    }).eq("id", conn_id).execute()
+
                 # Upsert each assistant with proper org_id
                 for assistant in assistants:
                     voice_data = assistant.get("voice", {}) or {}
                     model_data = assistant.get("model", {}) or {}
+                    assistant_org_id = assistant.get("orgId") or vapi_org_id
 
                     supabase_admin.table("voice_assistants").upsert({
                         "id": assistant["id"],
@@ -79,7 +98,7 @@ async def sync_voice_assistants(
                         "model_provider": model_data.get("provider"),
                         "model": model_data.get("model"),
                         "phone_number": assistant.get("phoneNumber"),
-                        "org_id": assistant.get("orgId"),  # Store VAPI org ID for proper tracking
+                        "org_id": assistant_org_id,  # Store VAPI org ID for proper tracking
                     }, on_conflict="id").execute()
 
                     all_assistants.append(assistant)
@@ -392,7 +411,7 @@ async def fetch_vapi_calls(
         # Get ALL VAPI connections for this user (not just active)
         # User may have assistants in different VAPI organizations
         all_connections = supabase_admin.table("voice_connections").select(
-            "api_key, org_name, org_id, is_active"
+            "id, api_key, org_name, org_id, is_active"
         ).eq("user_id", owner_user_id).execute()
 
         if not all_connections.data or len(all_connections.data) == 0:
@@ -413,8 +432,10 @@ async def fetch_vapi_calls(
         async with httpx.AsyncClient(timeout=60.0) as client:
             # Step 1: Search through ALL VAPI connections to find the assistant
             for conn in all_connections.data:
+                conn_id = conn["id"]
                 conn_api_key = conn["api_key"]
                 conn_org_name = conn.get("org_name", "Unknown")
+                conn_stored_org_id = conn.get("org_id")
                 logger.info(f"Checking VAPI org '{conn_org_name}' for assistant '{assistant_name}'")
 
                 assistants_response = await client.get(
@@ -428,6 +449,16 @@ async def fetch_vapi_calls(
 
                 vapi_assistants = assistants_response.json()
                 logger.info(f"Org '{conn_org_name}' has {len(vapi_assistants)} assistants")
+
+                # Get the VAPI org ID from the first assistant
+                vapi_org_id = vapi_assistants[0].get("orgId") if vapi_assistants else None
+
+                # Update voice_connection.org_id if it's different or NULL
+                if vapi_org_id and vapi_org_id != conn_stored_org_id:
+                    logger.info(f"Updating connection {conn_id} org_id from '{conn_stored_org_id}' to '{vapi_org_id}'")
+                    supabase_admin.table("voice_connections").update({
+                        "org_id": vapi_org_id
+                    }).eq("id", conn_id).execute()
 
                 # Check if our target assistant is in this org (by name)
                 search_name = assistant_name.lower().strip()
@@ -447,10 +478,11 @@ async def fetch_vapi_calls(
                                 if a.get("id"):
                                     assistant_ids_in_vapi.append(a.get("id"))
 
-                            # Sync all assistants from this org to database
+                            # Sync all assistants from this org to database with proper org_id
                             for a in vapi_assistants:
                                 voice_data = a.get("voice", {}) or {}
                                 model_data = a.get("model", {}) or {}
+                                assistant_vapi_org_id = a.get("orgId") or vapi_org_id
                                 supabase_admin.table("voice_assistants").upsert({
                                     "id": a.get("id"),
                                     "user_id": owner_user_id,
@@ -460,7 +492,7 @@ async def fetch_vapi_calls(
                                     "voice_id": voice_data.get("voiceId"),
                                     "model_provider": model_data.get("provider"),
                                     "model": model_data.get("model"),
-                                    "org_id": a.get("orgId"),
+                                    "org_id": assistant_vapi_org_id,
                                 }, on_conflict="id").execute()
 
                             break
