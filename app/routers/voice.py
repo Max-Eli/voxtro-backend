@@ -377,7 +377,7 @@ async def fetch_vapi_calls(
         # Get the owner's VAPI API key from voice_connections
         conn_result = supabase_admin.table("voice_connections").select(
             "api_key"
-        ).eq("user_id", owner_user_id).eq("is_active", True).maybeSingle().execute()
+        ).eq("user_id", owner_user_id).eq("is_active", True).maybe_single().execute()
 
         if not conn_result.data:
             logger.error(f"No active voice connection found for user: {owner_user_id}")
@@ -409,7 +409,7 @@ async def fetch_vapi_calls(
         # Find customer assigned to this assistant
         assignment_result = supabase_admin.table("customer_assistant_assignments").select(
             "customer_id"
-        ).eq("assistant_id", assistant_id).limit(1).maybeSingle().execute()
+        ).eq("assistant_id", assistant_id).limit(1).maybe_single().execute()
 
         customer_id = assignment_result.data["customer_id"] if assignment_result.data else None
 
@@ -459,7 +459,7 @@ async def fetch_vapi_calls(
                         # Check if transcript already exists
                         existing = supabase_admin.table("voice_assistant_transcripts").select(
                             "id"
-                        ).eq("call_id", call["id"]).eq("content", content).eq("role", role).maybeSingle().execute()
+                        ).eq("call_id", call["id"]).eq("content", content).eq("role", role).maybe_single().execute()
 
                         if not existing.data:
                             supabase_admin.table("voice_assistant_transcripts").insert({
@@ -474,7 +474,7 @@ async def fetch_vapi_calls(
                 if recording_url:
                     existing_recording = supabase_admin.table("voice_assistant_recordings").select(
                         "id"
-                    ).eq("call_id", call["id"]).maybeSingle().execute()
+                    ).eq("call_id", call["id"]).maybe_single().execute()
 
                     if not existing_recording.data:
                         supabase_admin.table("voice_assistant_recordings").insert({
