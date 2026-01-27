@@ -49,6 +49,9 @@ class FetchVapiCallsResponse(BaseModel):
     total_from_vapi: int
     synced_count: int
     assistant_name: Optional[str] = None
+    # Organization info for tracking which VAPI org was used
+    vapi_org_name: Optional[str] = None
+    matched_vapi_id: Optional[str] = None
     # Debug info
     total_all_calls: Optional[int] = None
     assistant_ids_in_vapi: Optional[List[str]] = None
