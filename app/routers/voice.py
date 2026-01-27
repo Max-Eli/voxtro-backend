@@ -515,23 +515,20 @@ async def fetch_vapi_calls(
                     "assistant_id": vapi_assistant_id
                 }).eq("assistant_id", assistant_id).execute()
 
-            # Step 2: Fetch ALL calls from VAPI using the correct API key
-            logger.info(f"Fetching calls from VAPI org '{found_in_org}'")
+            # Step 2: Fetch calls for this specific assistant from VAPI
+            # Use assistantId parameter for more reliable results
+            logger.info(f"Fetching calls for assistant {vapi_assistant_id} from VAPI org '{found_in_org}'")
             calls_response = await client.get(
-                "https://api.vapi.ai/call?limit=1000",
+                f"https://api.vapi.ai/call?assistantId={vapi_assistant_id}&limit=1000",
                 headers={"Authorization": f"Bearer {api_key}"}
             )
 
             if calls_response.status_code != 200:
-                logger.error(f"VAPI calls API error: {calls_response.status_code}")
+                logger.error(f"VAPI calls API error: {calls_response.status_code} - {calls_response.text}")
                 raise HTTPException(status_code=500, detail="Failed to fetch calls from voice service")
 
-            all_calls = calls_response.json()
-            total_all_calls = len(all_calls)
-            logger.info(f"Total calls in VAPI: {total_all_calls}")
-
-            # Filter calls for the target assistant (using matched VAPI ID)
-            vapi_calls = [c for c in all_calls if c.get("assistantId") == vapi_assistant_id]
+            vapi_calls = calls_response.json()
+            total_all_calls = len(vapi_calls)
             logger.info(f"Calls for assistant {vapi_assistant_id}: {len(vapi_calls)}")
 
         # Find customer assigned to this assistant (check both old and new IDs)
