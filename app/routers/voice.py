@@ -589,13 +589,36 @@ async def fetch_vapi_calls(
                         "id"
                     ).eq("call_id", call_id).limit(1).execute()
 
-                    # Get artifact from list response or fetch individual call details
-                    artifact = call.get("artifact", {})
-                    messages = artifact.get("messages", [])
+                    # Get messages from multiple possible locations in VAPI response
+                    # VAPI stores transcripts in different places depending on the endpoint:
+                    # 1. call.messages[] - Direct array on call object
+                    # 2. call.artifact.messages[] - Messages in artifact
+                    # 3. call.artifact.transcript[] - Transcript array (webhook format)
+                    artifact = call.get("artifact") or {}
+                    messages = []
 
-                    # If no messages in list response and no existing transcripts, fetch individual call details
+                    # Try call.messages first (direct on call object)
+                    if call.get("messages"):
+                        messages = call.get("messages", [])
+                        logger.info(f"Found {len(messages)} messages in call.messages for {call_id}")
+
+                    # Try artifact.messages if no direct messages
+                    if not messages and artifact.get("messages"):
+                        messages = artifact.get("messages", [])
+                        logger.info(f"Found {len(messages)} messages in artifact.messages for {call_id}")
+
+                    # Try artifact.transcript (webhook format)
+                    if not messages and artifact.get("transcript"):
+                        transcript_data = artifact.get("transcript")
+                        if isinstance(transcript_data, list):
+                            messages = transcript_data
+                        elif isinstance(transcript_data, dict) and transcript_data.get("messages"):
+                            messages = transcript_data.get("messages", [])
+                        logger.info(f"Found {len(messages)} messages in artifact.transcript for {call_id}")
+
+                    # If no messages found and no existing transcripts, fetch individual call details
                     if not messages and not existing_transcripts.data:
-                        logger.info(f"Fetching individual call details for {call_id}")
+                        logger.info(f"No messages found, fetching individual call details for {call_id}")
                         try:
                             call_detail_response = await client.get(
                                 f"https://api.vapi.ai/call/{call_id}",
@@ -603,17 +626,49 @@ async def fetch_vapi_calls(
                             )
                             if call_detail_response.status_code == 200:
                                 call_detail = call_detail_response.json()
-                                artifact = call_detail.get("artifact", {})
-                                messages = artifact.get("messages", [])
-                                logger.info(f"Got {len(messages)} messages from call details for {call_id}")
+                                logger.info(f"Call detail keys for {call_id}: {list(call_detail.keys())}")
+
+                                # Check all possible locations in the detailed response
+                                if call_detail.get("messages"):
+                                    messages = call_detail.get("messages", [])
+                                    logger.info(f"Found {len(messages)} messages in call_detail.messages")
+
+                                detail_artifact = call_detail.get("artifact") or {}
+                                if not messages and detail_artifact.get("messages"):
+                                    messages = detail_artifact.get("messages", [])
+                                    logger.info(f"Found {len(messages)} messages in call_detail.artifact.messages")
+
+                                if not messages and detail_artifact.get("transcript"):
+                                    transcript_data = detail_artifact.get("transcript")
+                                    if isinstance(transcript_data, list):
+                                        messages = transcript_data
+                                    elif isinstance(transcript_data, dict) and transcript_data.get("messages"):
+                                        messages = transcript_data.get("messages", [])
+                                    logger.info(f"Found {len(messages)} messages in call_detail.artifact.transcript")
+
+                                # Update artifact for recording URL
+                                if detail_artifact:
+                                    artifact = detail_artifact
+
+                                if not messages:
+                                    logger.warning(f"No messages found in call details for {call_id}. Artifact keys: {list(detail_artifact.keys()) if detail_artifact else 'None'}")
                         except Exception as detail_error:
                             logger.warning(f"Failed to fetch call details for {call_id}: {detail_error}")
 
                     # Sync transcript messages
                     transcript_text = ""
                     for msg in messages:
-                        role = "assistant" if msg.get("role") == "bot" else msg.get("role")
-                        content = msg.get("message")
+                        # Handle different role formats: "bot" -> "assistant", "human"/"customer" -> "user"
+                        raw_role = msg.get("role", "")
+                        if raw_role in ("bot", "assistant"):
+                            role = "assistant"
+                        elif raw_role in ("user", "human", "customer"):
+                            role = "user"
+                        else:
+                            role = raw_role
+
+                        # Handle different content field names: "message" or "content"
+                        content = msg.get("message") or msg.get("content") or ""
 
                         if role in ("user", "assistant") and content:
                             transcript_text += f"{role}: {content}\n"
@@ -624,13 +679,28 @@ async def fetch_vapi_calls(
                             ).eq("call_id", call_id).eq("content", content).eq("role", role).maybe_single().execute()
 
                             if not existing.data:
+                                # Handle different timestamp field names
+                                msg_time = msg.get("time") or msg.get("timestamp") or msg.get("secondsFromStart")
+                                # Convert seconds to ISO timestamp if needed
+                                if msg_time and isinstance(msg_time, (int, float)):
+                                    # It's seconds from start, use call start time as base
+                                    from datetime import datetime, timedelta
+                                    try:
+                                        start_dt = datetime.fromisoformat(call.get("startedAt", "").replace("Z", "+00:00"))
+                                        msg_timestamp = (start_dt + timedelta(seconds=float(msg_time))).isoformat()
+                                    except:
+                                        msg_timestamp = call.get("startedAt")
+                                else:
+                                    msg_timestamp = msg_time or call.get("startedAt")
+
                                 supabase_admin.table("voice_assistant_transcripts").insert({
                                     "call_id": call_id,
                                     "role": role,
                                     "content": content,
-                                    "timestamp": msg.get("time") or call.get("startedAt"),
+                                    "timestamp": msg_timestamp,
                                 }).execute()
                                 transcript_synced_count += 1
+                                logger.info(f"Synced transcript message for call {call_id}: {role}: {content[:50]}...")
 
                     # Sync recording if available
                     recording_url = artifact.get("recordingUrl")
