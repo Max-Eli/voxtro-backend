@@ -968,11 +968,30 @@ async def sync_customer_whatsapp_conversations(auth_data: Dict = Depends(get_cur
                             # Fallback to current time if no timestamp available
                             started_at = datetime.utcnow().isoformat() + "Z"
 
+                        # Get phone number from various possible locations per ElevenLabs API
+                        phone_number = None
+
+                        # Check conversation_initiation_client_data for dynamic variables
+                        client_data = conv_detail.get("conversation_initiation_client_data", {})
+                        dynamic_vars = client_data.get("dynamic_variables", {})
+                        if dynamic_vars:
+                            phone_number = dynamic_vars.get("system__caller_id") or dynamic_vars.get("system__called_number")
+
+                        # Check metadata.phone_call for phone call metadata
+                        if not phone_number and metadata.get("phone_call"):
+                            phone_call = metadata["phone_call"]
+                            phone_number = phone_call.get("from_number") or phone_call.get("to_number")
+
+                        # Check metadata.whatsapp for WhatsApp metadata
+                        if not phone_number and metadata.get("whatsapp"):
+                            whatsapp = metadata["whatsapp"]
+                            phone_number = whatsapp.get("phone_number") or whatsapp.get("from") or whatsapp.get("user_id")
+
                         # Upsert conversation
                         conv_data = {
                             "id": conversation_id,
                             "agent_id": agent_id,
-                            "phone_number": metadata.get("phone_number") or conv.get("phone_number"),
+                            "phone_number": phone_number,
                             "status": conv_detail.get("status", "done"),
                             "started_at": started_at,
                             "ended_at": ended_at
