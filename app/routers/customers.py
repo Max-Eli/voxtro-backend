@@ -854,3 +854,330 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
     except Exception as e:
         logger.error(f"Get customer analytics error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/portal/sync-whatsapp-conversations")
+async def sync_customer_whatsapp_conversations(auth_data: Dict = Depends(get_current_customer)):
+    """
+    Sync WhatsApp conversations from ElevenLabs for customer's assigned agents.
+    This allows customers to see the latest conversations without admin intervention.
+    """
+    import httpx
+    from datetime import datetime, timedelta
+
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Get assigned WhatsApp agents
+        assignments = supabase_admin.table("customer_whatsapp_agent_assignments").select(
+            "agent_id"
+        ).eq("customer_id", customer_id).execute()
+
+        if not assignments.data:
+            return {"success": True, "synced": 0, "message": "No WhatsApp agents assigned"}
+
+        agent_ids = [a["agent_id"] for a in assignments.data]
+        total_synced = 0
+
+        for agent_id in agent_ids:
+            try:
+                # Get the agent's owner user_id
+                agent_result = supabase_admin.table("whatsapp_agents").select(
+                    "user_id"
+                ).eq("id", agent_id).single().execute()
+
+                if not agent_result.data:
+                    continue
+
+                owner_user_id = agent_result.data["user_id"]
+
+                # Get owner's ElevenLabs connection
+                conn_result = supabase_admin.table("elevenlabs_connections").select(
+                    "api_key"
+                ).eq("user_id", owner_user_id).eq("is_active", True).single().execute()
+
+                if not conn_result.data:
+                    continue
+
+                api_key = conn_result.data["api_key"]
+
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    # Fetch conversations list from ElevenLabs
+                    conv_list_response = await client.get(
+                        "https://api.elevenlabs.io/v1/convai/conversations",
+                        headers={"xi-api-key": api_key},
+                        params={"agent_id": agent_id}
+                    )
+
+                    if conv_list_response.status_code != 200:
+                        logger.warning(f"Failed to fetch WhatsApp conversations for agent {agent_id}")
+                        continue
+
+                    conv_list = conv_list_response.json()
+                    conversations = conv_list.get("conversations", [])
+
+                    for conv in conversations:
+                        conversation_id = conv.get("conversation_id")
+                        if not conversation_id:
+                            continue
+
+                        # Check if conversation already exists
+                        existing = supabase_admin.table("whatsapp_conversations").select(
+                            "id"
+                        ).eq("id", conversation_id).execute()
+
+                        if existing.data:
+                            continue  # Already synced
+
+                        # Fetch conversation details
+                        conv_detail_response = await client.get(
+                            f"https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}",
+                            headers={"xi-api-key": api_key}
+                        )
+
+                        if conv_detail_response.status_code != 200:
+                            continue
+
+                        conv_detail = conv_detail_response.json()
+                        metadata = conv_detail.get("metadata", {})
+                        transcript = conv_detail.get("transcript", [])
+                        analysis = conv_detail.get("analysis", {})
+
+                        # Upsert conversation
+                        conv_data = {
+                            "id": conversation_id,
+                            "agent_id": agent_id,
+                            "phone_number": metadata.get("phone_number") or conv.get("phone_number"),
+                            "status": conv_detail.get("status", "done"),
+                            "started_at": metadata.get("start_time") or conv.get("start_time"),
+                            "ended_at": metadata.get("end_time") or conv.get("end_time"),
+                            "duration_seconds": metadata.get("call_duration_secs") or 0
+                        }
+
+                        if analysis and analysis.get("transcript_summary"):
+                            conv_data["summary"] = analysis.get("transcript_summary")
+
+                        supabase_admin.table("whatsapp_conversations").upsert(
+                            conv_data, on_conflict="id"
+                        ).execute()
+
+                        # Insert transcript messages
+                        if transcript:
+                            existing_msgs = supabase_admin.table("whatsapp_messages").select(
+                                "id"
+                            ).eq("conversation_id", conversation_id).limit(1).execute()
+
+                            if not existing_msgs.data:
+                                messages_to_insert = []
+                                for msg in transcript:
+                                    role = msg.get("role", "unknown")
+                                    if role == "agent":
+                                        role = "assistant"
+                                    content = msg.get("message", "") or msg.get("text", "")
+                                    if content:
+                                        messages_to_insert.append({
+                                            "conversation_id": conversation_id,
+                                            "role": role,
+                                            "content": content,
+                                            "timestamp": datetime.utcnow().isoformat()
+                                        })
+
+                                if messages_to_insert:
+                                    supabase_admin.table("whatsapp_messages").insert(
+                                        messages_to_insert
+                                    ).execute()
+
+                        total_synced += 1
+
+            except Exception as e:
+                logger.warning(f"Error syncing agent {agent_id}: {e}")
+                continue
+
+        return {
+            "success": True,
+            "synced": total_synced,
+            "message": f"Synced {total_synced} new conversations"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sync customer WhatsApp conversations error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/portal/sync-voice-calls")
+async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_customer)):
+    """
+    Sync Voice Assistant calls from VAPI for customer's assigned assistants.
+    This allows customers to see the latest calls without admin intervention.
+    """
+    import httpx
+    from datetime import datetime
+
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Get assigned voice assistants
+        assignments = supabase_admin.table("customer_assistant_assignments").select(
+            "assistant_id"
+        ).eq("customer_id", customer_id).execute()
+
+        if not assignments.data:
+            return {"success": True, "synced": 0, "message": "No voice assistants assigned"}
+
+        assistant_ids = [a["assistant_id"] for a in assignments.data]
+        total_synced = 0
+
+        for assistant_id in assistant_ids:
+            try:
+                # Get the assistant's owner user_id
+                assistant_result = supabase_admin.table("voice_assistants").select(
+                    "user_id, vapi_assistant_id"
+                ).eq("id", assistant_id).single().execute()
+
+                if not assistant_result.data:
+                    continue
+
+                owner_user_id = assistant_result.data["user_id"]
+                vapi_assistant_id = assistant_result.data.get("vapi_assistant_id")
+
+                # Get owner's VAPI connections
+                conn_result = supabase_admin.table("vapi_connections").select(
+                    "api_key, org_id"
+                ).eq("user_id", owner_user_id).eq("is_active", True).execute()
+
+                if not conn_result.data:
+                    continue
+
+                for conn in conn_result.data:
+                    api_key = conn["api_key"]
+
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        # Fetch calls from VAPI
+                        params = {"limit": 50}
+                        if vapi_assistant_id:
+                            params["assistantId"] = vapi_assistant_id
+
+                        calls_response = await client.get(
+                            "https://api.vapi.ai/call",
+                            headers={"Authorization": f"Bearer {api_key}"},
+                            params=params
+                        )
+
+                        if calls_response.status_code != 200:
+                            continue
+
+                        calls = calls_response.json()
+                        if isinstance(calls, dict):
+                            calls = calls.get("calls", []) or calls.get("data", [])
+
+                        for call in calls:
+                            call_id = call.get("id")
+                            if not call_id:
+                                continue
+
+                            # Check if call already exists
+                            existing = supabase_admin.table("voice_assistant_calls").select(
+                                "id"
+                            ).eq("id", call_id).execute()
+
+                            if existing.data:
+                                continue  # Already synced
+
+                            # Get call details
+                            call_detail_response = await client.get(
+                                f"https://api.vapi.ai/call/{call_id}",
+                                headers={"Authorization": f"Bearer {api_key}"}
+                            )
+
+                            if call_detail_response.status_code != 200:
+                                continue
+
+                            call_detail = call_detail_response.json()
+                            artifact = call_detail.get("artifact", {}) or {}
+
+                            # Upsert call record
+                            call_data = {
+                                "id": call_id,
+                                "assistant_id": assistant_id,
+                                "vapi_assistant_id": call_detail.get("assistantId"),
+                                "phone_number": call_detail.get("customer", {}).get("number"),
+                                "status": call_detail.get("status", "completed"),
+                                "started_at": call_detail.get("startedAt"),
+                                "ended_at": call_detail.get("endedAt"),
+                                "duration_seconds": call_detail.get("durationSeconds") or 0,
+                                "recording_url": artifact.get("recordingUrl") or call_detail.get("recordingUrl"),
+                                "cost": call_detail.get("cost")
+                            }
+
+                            supabase_admin.table("voice_assistant_calls").upsert(
+                                call_data, on_conflict="id"
+                            ).execute()
+
+                            # Insert transcript messages
+                            messages = artifact.get("messages", []) or call_detail.get("messages", [])
+                            if messages:
+                                existing_msgs = supabase_admin.table("voice_assistant_transcripts").select(
+                                    "id"
+                                ).eq("call_id", call_id).limit(1).execute()
+
+                                if not existing_msgs.data:
+                                    transcripts_to_insert = []
+                                    for msg in messages:
+                                        role = msg.get("role", "unknown")
+                                        if role in ["bot", "assistant"]:
+                                            role = "assistant"
+                                        elif role in ["user", "human", "customer"]:
+                                            role = "user"
+                                        content = msg.get("message") or msg.get("content") or msg.get("text", "")
+                                        if content and role in ["assistant", "user"]:
+                                            transcripts_to_insert.append({
+                                                "call_id": call_id,
+                                                "role": role,
+                                                "content": content,
+                                                "timestamp": datetime.utcnow().isoformat()
+                                            })
+
+                                    if transcripts_to_insert:
+                                        supabase_admin.table("voice_assistant_transcripts").insert(
+                                            transcripts_to_insert
+                                        ).execute()
+
+                            total_synced += 1
+
+            except Exception as e:
+                logger.warning(f"Error syncing assistant {assistant_id}: {e}")
+                continue
+
+        return {
+            "success": True,
+            "synced": total_synced,
+            "message": f"Synced {total_synced} new calls"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Sync customer voice calls error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
