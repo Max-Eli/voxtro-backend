@@ -550,9 +550,6 @@ async def fetch_whatsapp_conversations(
                     conv.get("phone_number")
                 )
 
-                # Duration in seconds
-                duration = metadata.get("call_duration_secs") or 0
-
                 # Upsert conversation record
                 conv_data = {
                     "id": conversation_id,
@@ -560,8 +557,7 @@ async def fetch_whatsapp_conversations(
                     "phone_number": phone_number,
                     "status": status,
                     "started_at": started_at,
-                    "ended_at": ended_at,
-                    "duration_seconds": duration
+                    "ended_at": ended_at
                 }
 
                 # Add analysis data if available from ElevenLabs

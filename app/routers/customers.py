@@ -960,8 +960,7 @@ async def sync_customer_whatsapp_conversations(auth_data: Dict = Depends(get_cur
                             "phone_number": metadata.get("phone_number") or conv.get("phone_number"),
                             "status": conv_detail.get("status", "done"),
                             "started_at": metadata.get("start_time") or conv.get("start_time"),
-                            "ended_at": metadata.get("end_time") or conv.get("end_time"),
-                            "duration_seconds": metadata.get("call_duration_secs") or 0
+                            "ended_at": metadata.get("end_time") or conv.get("end_time")
                         }
 
                         if analysis and analysis.get("transcript_summary"):
