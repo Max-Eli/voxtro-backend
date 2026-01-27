@@ -355,13 +355,16 @@ async def fetch_vapi_calls(
     Fetch and sync calls from VAPI API for a specific assistant.
     Used by customer portal to get call history.
 
-    This endpoint looks up the assistant's owner and uses their VAPI API key
-    to fetch calls, then syncs them to the database.
+    This endpoint:
+    1. Syncs assistants from VAPI to ensure IDs are correct
+    2. Fetches all calls from VAPI
+    3. Matches calls by assistant name (handles ID mismatches)
+    4. Syncs matched calls to database
     """
     try:
         assistant_id = request.assistant_id
 
-        # Get the assistant to find the owner (user_id) and org_id
+        # Get the assistant to find the owner (user_id) and name
         assistant_result = supabase_admin.table("voice_assistants").select(
             "user_id, name, org_id"
         ).eq("id", assistant_id).single().execute()
@@ -376,20 +379,9 @@ async def fetch_vapi_calls(
         assistant_org_id = assistant_data.get("org_id")
 
         # Get the VAPI API key from voice_connections
-        # First try to match by org_id (for multi-org users), then fallback to user_id + is_active
-        conn_result = None
-        if assistant_org_id:
-            conn_result = supabase_admin.table("voice_connections").select(
-                "api_key"
-            ).eq("user_id", owner_user_id).eq("org_id", assistant_org_id).eq("is_active", True).limit(1).execute()
-            logger.info(f"Looking for connection with org_id={assistant_org_id}: found={bool(conn_result.data)}")
-
-        # Fallback to active connection if no org_id match
-        if not conn_result or not conn_result.data:
-            conn_result = supabase_admin.table("voice_connections").select(
-                "api_key"
-            ).eq("user_id", owner_user_id).eq("is_active", True).limit(1).execute()
-            logger.info(f"Using active connection for user {owner_user_id}: found={bool(conn_result.data)}")
+        conn_result = supabase_admin.table("voice_connections").select(
+            "api_key"
+        ).eq("user_id", owner_user_id).eq("is_active", True).limit(1).execute()
 
         if not conn_result.data or len(conn_result.data) == 0:
             logger.error(f"No voice connection found for user: {owner_user_id}")
@@ -400,51 +392,90 @@ async def fetch_vapi_calls(
 
         api_key = conn_result.data[0]["api_key"]
 
-        # Fetch calls from VAPI API for this assistant
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            # First try with assistantId filter
-            response = await client.get(
-                f"https://api.vapi.ai/call?assistantId={assistant_id}&limit=100",
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            # Step 1: Sync assistants from VAPI first
+            logger.info(f"Syncing assistants from VAPI for user {owner_user_id}")
+            assistants_response = await client.get(
+                "https://api.vapi.ai/assistant",
                 headers={"Authorization": f"Bearer {api_key}"}
             )
 
-            if response.status_code != 200:
-                logger.error(f"VAPI API error: {response.status_code} - {response.text}")
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to fetch calls from voice service"
-                )
+            vapi_assistant_id = assistant_id  # Default to the ID we have
+            assistant_ids_in_vapi = []
 
-            vapi_calls = response.json()
-            logger.info(f"Fetched {len(vapi_calls)} calls from VAPI for assistant {assistant_id}")
+            if assistants_response.status_code == 200:
+                vapi_assistants = assistants_response.json()
+                logger.info(f"Found {len(vapi_assistants)} assistants in VAPI")
 
-            # Debug info
-            total_all_calls = None
-            assistant_ids_in_vapi = None
+                # Build a map of assistant names to VAPI IDs
+                name_to_vapi_id = {}
+                for va in vapi_assistants:
+                    va_name = va.get("name", "")
+                    va_id = va.get("id")
+                    if va_name and va_id:
+                        name_to_vapi_id[va_name.lower().strip()] = va_id
+                        assistant_ids_in_vapi.append(va_id)
 
-            # If no calls found with filter, try fetching all calls and filter manually
-            if len(vapi_calls) == 0:
-                logger.info("No calls found with assistantId filter, trying without filter...")
-                all_response = await client.get(
-                    "https://api.vapi.ai/call?limit=100",
-                    headers={"Authorization": f"Bearer {api_key}"}
-                )
-                if all_response.status_code == 200:
-                    all_calls = all_response.json()
-                    total_all_calls = len(all_calls)
-                    logger.info(f"Total calls in VAPI account: {total_all_calls}")
-                    # Get the assistant IDs from the calls
-                    if all_calls:
-                        assistant_ids_in_vapi = list(set(c.get("assistantId") for c in all_calls if c.get("assistantId")))
-                        logger.info(f"Assistant IDs in calls: {assistant_ids_in_vapi}")
-                    # Filter for the specific assistant
-                    vapi_calls = [c for c in all_calls if c.get("assistantId") == assistant_id]
-                    logger.info(f"Calls matching assistant {assistant_id}: {len(vapi_calls)}")
+                        # Sync assistant to database
+                        voice_data = va.get("voice", {}) or {}
+                        model_data = va.get("model", {}) or {}
+                        supabase_admin.table("voice_assistants").upsert({
+                            "id": va_id,
+                            "user_id": owner_user_id,
+                            "name": va.get("name") or "Unnamed",
+                            "first_message": va.get("firstMessage"),
+                            "voice_provider": voice_data.get("provider"),
+                            "voice_id": voice_data.get("voiceId"),
+                            "model_provider": model_data.get("provider"),
+                            "model": model_data.get("model"),
+                            "org_id": va.get("orgId"),
+                        }, on_conflict="id").execute()
 
-        # Find customer assigned to this assistant
+                # Find the correct VAPI ID by matching name
+                search_name = assistant_name.lower().strip()
+                if search_name in name_to_vapi_id:
+                    vapi_assistant_id = name_to_vapi_id[search_name]
+                    logger.info(f"Matched assistant '{assistant_name}' to VAPI ID: {vapi_assistant_id}")
+
+                    # Update our assistant record if ID changed
+                    if vapi_assistant_id != assistant_id:
+                        logger.info(f"Updating assistant ID from {assistant_id} to {vapi_assistant_id}")
+                        # Update customer assignments to point to new ID
+                        supabase_admin.table("customer_assistant_assignments").update({
+                            "assistant_id": vapi_assistant_id
+                        }).eq("assistant_id", assistant_id).execute()
+                else:
+                    logger.warning(f"Could not find assistant '{assistant_name}' in VAPI")
+
+            # Step 2: Fetch ALL calls from VAPI
+            logger.info("Fetching all calls from VAPI")
+            calls_response = await client.get(
+                "https://api.vapi.ai/call?limit=1000",
+                headers={"Authorization": f"Bearer {api_key}"}
+            )
+
+            if calls_response.status_code != 200:
+                logger.error(f"VAPI calls API error: {calls_response.status_code}")
+                raise HTTPException(status_code=500, detail="Failed to fetch calls from voice service")
+
+            all_calls = calls_response.json()
+            total_all_calls = len(all_calls)
+            logger.info(f"Total calls in VAPI: {total_all_calls}")
+
+            # Filter calls for the target assistant (using matched VAPI ID)
+            vapi_calls = [c for c in all_calls if c.get("assistantId") == vapi_assistant_id]
+            logger.info(f"Calls for assistant {vapi_assistant_id}: {len(vapi_calls)}")
+
+        # Find customer assigned to this assistant (check both old and new IDs)
         assignment_result = supabase_admin.table("customer_assistant_assignments").select(
             "customer_id"
-        ).eq("assistant_id", assistant_id).limit(1).maybe_single().execute()
+        ).eq("assistant_id", vapi_assistant_id).limit(1).maybe_single().execute()
+
+        # Also check with original ID if no match
+        if not assignment_result.data and vapi_assistant_id != assistant_id:
+            assignment_result = supabase_admin.table("customer_assistant_assignments").select(
+                "customer_id"
+            ).eq("assistant_id", assistant_id).limit(1).maybe_single().execute()
 
         customer_id = assignment_result.data["customer_id"] if assignment_result.data else None
 
@@ -464,7 +495,7 @@ async def fetch_vapi_calls(
 
             call_data = {
                 "id": call["id"],
-                "assistant_id": assistant_id,
+                "assistant_id": vapi_assistant_id,  # Use the correct VAPI ID
                 "customer_id": customer_id,
                 "phone_number": call.get("customer", {}).get("number") or call.get("phoneNumber", {}).get("number"),
                 "started_at": call.get("startedAt"),
