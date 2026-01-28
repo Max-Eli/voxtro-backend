@@ -260,6 +260,369 @@ async def send_admin_ticket_notification(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def format_duration(seconds: int) -> str:
+    """Format seconds into human readable duration"""
+    if seconds < 60:
+        return f"{seconds}s"
+    elif seconds < 3600:
+        mins = seconds // 60
+        secs = seconds % 60
+        return f"{mins}m {secs}s"
+    else:
+        hours = seconds // 3600
+        mins = (seconds % 3600) // 60
+        return f"{hours}h {mins}m"
+
+
+def generate_weekly_email_html(
+    customer_name: str,
+    week_range: str,
+    portal_url: str,
+    support_url: str,
+    overall_stats: dict,
+    chatbot_data: dict,
+    voice_data: dict,
+    whatsapp_data: dict,
+    year: int,
+    custom_logo_url: str = None,
+    custom_primary_color: str = None,
+    brand_name: str = "Voxtro"
+) -> str:
+    """Generate the dark-themed weekly email HTML with optional custom branding"""
+
+    # Use custom branding if provided
+    has_custom_branding = bool(custom_logo_url)
+    logo_url = custom_logo_url or "https://ik.imagekit.io/wrewtbha2/Voxtro%20(1920%20x%201080%20px)%20(3).png"
+    primary_color = custom_primary_color or "#e45133"
+    display_brand_name = "" if has_custom_branding else "Voxtro"
+
+    # Build chatbot section
+    chatbot_section = ""
+    if chatbot_data.get("enabled") and chatbot_data.get("items"):
+        chatbot_rows = ""
+        for item in chatbot_data["items"]:
+            chatbot_rows += f'''
+            <tr>
+                <td style="padding:12px; font-size:13px; color:#ffffff; border-bottom:1px solid #1c1c20;">{item["name"]}</td>
+                <td style="padding:12px; font-size:13px; color:#e8e8ea; border-bottom:1px solid #1c1c20;" align="right">{item["conversations"]}</td>
+                <td style="padding:12px; font-size:13px; color:#e8e8ea; border-bottom:1px solid #1c1c20;" align="right">{item["messages"]}</td>
+            </tr>'''
+
+        chatbot_section = f'''
+        <tr>
+            <td style="padding:0 0 14px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#151517; border:1px solid #242428; border-radius:16px;">
+                <tr>
+                  <td style="padding:18px;">
+                    <div style="font-size:13px; color:#b6b6bb; line-height:18px; font-weight:800;">🤖 Chatbot Performance</div>
+                    <div style="height:12px; line-height:12px;">&nbsp;</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding:0 8px 10px 0;" width="50%">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr><td style="padding:14px;">
+                              <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Conversations</div>
+                              <div style="font-size:20px; color:#ffffff; font-weight:900; margin-top:4px;">{chatbot_data["total_conversations"]}</div>
+                            </td></tr>
+                          </table>
+                        </td>
+                        <td style="padding:0 0 10px 8px;" width="50%">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr><td style="padding:14px;">
+                              <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Messages</div>
+                              <div style="font-size:20px; color:#ffffff; font-weight:900; margin-top:4px;">{chatbot_data["total_messages"]}</div>
+                            </td></tr>
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+                    <div style="height:6px; line-height:6px;">&nbsp;</div>
+                    <div style="font-size:12px; color:#b6b6bb; font-weight:800; margin:8px 0 10px 0;">Per-chatbot breakdown</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:separate; border-spacing:0; background:#101012; border:1px solid #26262b; border-radius:14px; overflow:hidden;">
+                      <tr>
+                        <td style="padding:12px; font-size:12px; font-weight:900; color:#b6b6bb; border-bottom:1px solid #26262b;">Chatbot</td>
+                        <td style="padding:12px; font-size:12px; font-weight:900; color:#b6b6bb; border-bottom:1px solid #26262b;" align="right">Conversations</td>
+                        <td style="padding:12px; font-size:12px; font-weight:900; color:#b6b6bb; border-bottom:1px solid #26262b;" align="right">Messages</td>
+                      </tr>
+                      {chatbot_rows}
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+        </tr>'''
+
+    # Build voice section
+    voice_section = ""
+    if voice_data.get("enabled") and voice_data.get("items"):
+        voice_rows = ""
+        for item in voice_data["items"]:
+            voice_rows += f'''
+            <tr>
+                <td style="padding:12px; font-size:13px; color:#ffffff; border-bottom:1px solid #1c1c20;">{item["name"]}</td>
+                <td style="padding:12px; font-size:13px; color:#e8e8ea; border-bottom:1px solid #1c1c20;" align="right">{item["calls"]}</td>
+                <td style="padding:12px; font-size:13px; color:#e8e8ea; border-bottom:1px solid #1c1c20;" align="right">{item["duration"]}</td>
+            </tr>'''
+
+        voice_section = f'''
+        <tr>
+            <td style="padding:0 0 14px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#151517; border:1px solid #242428; border-radius:16px;">
+                <tr>
+                  <td style="padding:18px;">
+                    <div style="font-size:13px; color:#b6b6bb; line-height:18px; font-weight:800;">📞 Voice Assistant Performance</div>
+                    <div style="height:12px; line-height:12px;">&nbsp;</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding:0 8px 10px 0;" width="50%">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr><td style="padding:14px;">
+                              <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Total Calls</div>
+                              <div style="font-size:20px; color:#ffffff; font-weight:900; margin-top:4px;">{voice_data["total_calls"]}</div>
+                            </td></tr>
+                          </table>
+                        </td>
+                        <td style="padding:0 0 10px 8px;" width="50%">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr><td style="padding:14px;">
+                              <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Total Duration</div>
+                              <div style="font-size:20px; color:#ffffff; font-weight:900; margin-top:4px;">{voice_data["total_duration"]}</div>
+                            </td></tr>
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+                    <div style="height:6px; line-height:6px;">&nbsp;</div>
+                    <div style="font-size:12px; color:#b6b6bb; font-weight:800; margin:8px 0 10px 0;">Per-assistant breakdown</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:separate; border-spacing:0; background:#101012; border:1px solid #26262b; border-radius:14px; overflow:hidden;">
+                      <tr>
+                        <td style="padding:12px; font-size:12px; font-weight:900; color:#b6b6bb; border-bottom:1px solid #26262b;">Assistant</td>
+                        <td style="padding:12px; font-size:12px; font-weight:900; color:#b6b6bb; border-bottom:1px solid #26262b;" align="right">Calls</td>
+                        <td style="padding:12px; font-size:12px; font-weight:900; color:#b6b6bb; border-bottom:1px solid #26262b;" align="right">Duration</td>
+                      </tr>
+                      {voice_rows}
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+        </tr>'''
+
+    # Build WhatsApp section
+    whatsapp_section = ""
+    if whatsapp_data.get("enabled") and whatsapp_data.get("items"):
+        whatsapp_rows = ""
+        for item in whatsapp_data["items"]:
+            whatsapp_rows += f'''
+            <tr>
+                <td style="padding:12px; font-size:13px; color:#ffffff; border-bottom:1px solid #1c1c20;">{item["name"]}</td>
+                <td style="padding:12px; font-size:13px; color:#e8e8ea; border-bottom:1px solid #1c1c20;" align="right">{item["conversations"]}</td>
+                <td style="padding:12px; font-size:13px; color:#e8e8ea; border-bottom:1px solid #1c1c20;" align="right">{item["messages"]}</td>
+            </tr>'''
+
+        whatsapp_section = f'''
+        <tr>
+            <td style="padding:0 0 14px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#151517; border:1px solid #242428; border-radius:16px;">
+                <tr>
+                  <td style="padding:18px;">
+                    <div style="font-size:13px; color:#b6b6bb; line-height:18px; font-weight:800;">💬 WhatsApp Agent Performance</div>
+                    <div style="height:12px; line-height:12px;">&nbsp;</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding:0 8px 10px 0;" width="50%">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr><td style="padding:14px;">
+                              <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Conversations</div>
+                              <div style="font-size:20px; color:#ffffff; font-weight:900; margin-top:4px;">{whatsapp_data["total_conversations"]}</div>
+                            </td></tr>
+                          </table>
+                        </td>
+                        <td style="padding:0 0 10px 8px;" width="50%">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr><td style="padding:14px;">
+                              <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Messages</div>
+                              <div style="font-size:20px; color:#ffffff; font-weight:900; margin-top:4px;">{whatsapp_data["total_messages"]}</div>
+                            </td></tr>
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+                    <div style="height:6px; line-height:6px;">&nbsp;</div>
+                    <div style="font-size:12px; color:#b6b6bb; font-weight:800; margin:8px 0 10px 0;">Per-agent breakdown</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:separate; border-spacing:0; background:#101012; border:1px solid #26262b; border-radius:14px; overflow:hidden;">
+                      <tr>
+                        <td style="padding:12px; font-size:12px; font-weight:900; color:#b6b6bb; border-bottom:1px solid #26262b;">Agent</td>
+                        <td style="padding:12px; font-size:12px; font-weight:900; color:#b6b6bb; border-bottom:1px solid #26262b;" align="right">Conversations</td>
+                        <td style="padding:12px; font-size:12px; font-weight:900; color:#b6b6bb; border-bottom:1px solid #26262b;" align="right">Messages</td>
+                      </tr>
+                      {whatsapp_rows}
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+        </tr>'''
+
+    # Footer text - hide Voxtro if custom branding
+    footer_text = f"© {year} {display_brand_name}. All rights reserved." if display_brand_name else f"© {year}. All rights reserved."
+    preheader_text = f"Your weekly agent summary for {week_range} is ready."
+
+    html = f'''<!DOCTYPE html>
+<html lang="en" style="margin:0; padding:0;">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>Weekly Agent Summary</title>
+</head>
+<body style="margin:0; padding:0; background-color:#0f0f10; font-family: Arial, Helvetica, sans-serif; color:#e8e8ea;">
+  <div style="display:none; max-height:0; overflow:hidden; opacity:0; color:transparent;">
+    {preheader_text}
+  </div>
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#0f0f10; padding:28px 0;">
+    <tr>
+      <td align="center" style="padding:0 16px;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="640" style="width:640px; max-width:640px;">
+          <!-- Header -->
+          <tr>
+            <td style="padding:0 0 14px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#151517; border:1px solid #242428; border-radius:16px;">
+                <tr>
+                  <td style="padding:18px 18px 14px 18px;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td align="left" style="vertical-align:middle;">
+                          <img src="{logo_url}" width="110" alt="Logo" style="display:block; border:0; outline:none; text-decoration:none; height:auto; max-height:50px;" />
+                        </td>
+                        <td align="right" style="vertical-align:middle;">
+                          <div style="font-size:12px; color:#b6b6bb; line-height:18px;">Weekly Summary</div>
+                          <div style="font-size:13px; color:#ffffff; font-weight:800; line-height:18px;">{week_range}</div>
+                        </td>
+                      </tr>
+                    </table>
+                    <div style="height:12px; line-height:12px;">&nbsp;</div>
+                    <div style="font-size:22px; line-height:30px; font-weight:900; color:#ffffff;">
+                      Hi {customer_name}, here's your weekly performance.
+                    </div>
+                    <div style="font-size:14px; line-height:22px; color:#b6b6bb; margin-top:6px;">
+                      Below is a breakdown of overall activity plus performance by channel for <span style="color:#ffffff; font-weight:700;">{week_range}</span>.
+                    </div>
+                    <div style="height:14px; line-height:14px;">&nbsp;</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td align="left" style="border-radius:12px; background-color:{primary_color};">
+                          <a href="{portal_url}" style="display:inline-block; padding:12px 16px; font-size:14px; font-weight:900; color:#0f0f10; text-decoration:none; border-radius:12px;" target="_blank">View in portal</a>
+                        </td>
+                        <td style="width:10px;">&nbsp;</td>
+                        <td align="left" style="border-radius:12px; border:1px solid #2a2a2f; background-color:#151517;">
+                          <a href="{support_url}" style="display:inline-block; padding:12px 16px; font-size:14px; font-weight:700; color:#e8e8ea; text-decoration:none; border-radius:12px;" target="_blank">Contact support</a>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Overall Performance -->
+          <tr>
+            <td style="padding:0 0 14px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#151517; border:1px solid #242428; border-radius:16px;">
+                <tr>
+                  <td style="padding:18px;">
+                    <div style="font-size:13px; color:#b6b6bb; line-height:18px; font-weight:800;">📈 Overall Performance</div>
+                    <div style="height:12px; line-height:12px;">&nbsp;</div>
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding:0 8px 10px 0;" width="50%">
+                          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr>
+                              <td style="padding:14px;">
+                                <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Total Interactions</div>
+                                <div style="font-size:22px; color:#ffffff; font-weight:900; margin-top:4px;">{overall_stats["total_interactions"]}</div>
+                                <div style="font-size:12px; color:#b6b6bb; margin-top:2px;">(conversations + calls)</div>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                        <td style="padding:0 0 10px 8px;" width="50%">
+                          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr>
+                              <td style="padding:14px;">
+                                <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Total Messages</div>
+                                <div style="font-size:22px; color:#ffffff; font-weight:900; margin-top:4px;">{overall_stats["total_messages"]}</div>
+                                <div style="font-size:12px; color:#b6b6bb; margin-top:2px;">(chatbot + WhatsApp)</div>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:0 8px 0 0;" width="50%">
+                          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr>
+                              <td style="padding:14px;">
+                                <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Call Duration</div>
+                                <div style="font-size:22px; color:#ffffff; font-weight:900; margin-top:4px;">{overall_stats["call_duration"]}</div>
+                                <div style="font-size:12px; color:#b6b6bb; margin-top:2px;">(voice assistants)</div>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                        <td style="padding:0 0 0 8px;" width="50%">
+                          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#101012; border:1px solid #26262b; border-radius:14px;">
+                            <tr>
+                              <td style="padding:14px;">
+                                <div style="font-size:12px; color:#b6b6bb; font-weight:800;">Leads Generated</div>
+                                <div style="font-size:22px; color:#ffffff; font-weight:900; margin-top:4px;">{overall_stats["leads_generated"]}</div>
+                                <div style="font-size:12px; color:#b6b6bb; margin-top:2px;">(this week)</div>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          {chatbot_section}
+          {voice_section}
+          {whatsapp_section}
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:0;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#0f0f10;">
+                <tr>
+                  <td style="padding:10px 8px 0 8px;">
+                    <div style="font-size:12px; line-height:18px; color:#8e8e95; text-align:center;">
+                      You're receiving this email because weekly summaries are enabled for your account.
+                    </div>
+                    <div style="height:14px; line-height:14px;">&nbsp;</div>
+                    <div style="font-size:12px; line-height:18px; color:#8e8e95; text-align:center;">
+                      {footer_text}
+                    </div>
+                    <div style="height:18px; line-height:18px;">&nbsp;</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>'''
+
+    return html
+
+
 @router.post("/weekly-update/{customer_id}")
 async def send_weekly_update(customer_id: str, auth_data: Dict = Depends(get_current_user)):
     """Send weekly activity update email to a customer"""
@@ -267,7 +630,6 @@ async def send_weekly_update(customer_id: str, auth_data: Dict = Depends(get_cur
         from app.database import supabase_admin
         from datetime import datetime, timedelta
 
-        # Get customer info
         customer_result = supabase_admin.table("customers").select(
             "id, email, full_name, created_by_user_id, chatbot_id, voice_assistant_id, whatsapp_agent_id"
         ).eq("id", customer_id).single().execute()
@@ -276,164 +638,113 @@ async def send_weekly_update(customer_id: str, auth_data: Dict = Depends(get_cur
             raise HTTPException(status_code=404, detail="Customer not found")
 
         customer = customer_result.data
-        week_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+        now = datetime.utcnow()
+        week_ago = (now - timedelta(days=7)).isoformat()
+        week_range = f"{(now - timedelta(days=7)).strftime('%b %d')} - {now.strftime('%b %d, %Y')}"
 
-        # Get chatbot conversations
-        chatbot_convos = 0
+        # Initialize stats
+        total_interactions = 0
+        total_messages = 0
+        total_call_duration = 0
+
+        chatbot_data = {"enabled": False, "items": [], "total_conversations": 0, "total_messages": 0}
+        voice_data = {"enabled": False, "items": [], "total_calls": 0, "total_duration": "0m"}
+        whatsapp_data = {"enabled": False, "items": [], "total_conversations": 0, "total_messages": 0}
+
+        # Get chatbot data
         if customer.get("chatbot_id"):
-            convos_result = supabase_admin.table("conversations").select(
-                "id", count="exact"
-            ).eq("chatbot_id", customer["chatbot_id"]).gte("created_at", week_ago).execute()
-            chatbot_convos = convos_result.count or 0
+            chatbot = supabase_admin.table("chatbots").select("id, name").eq("id", customer["chatbot_id"]).single().execute()
+            convos = supabase_admin.table("conversations").select("id, messages").eq("chatbot_id", customer["chatbot_id"]).gte("created_at", week_ago).execute()
 
-        # Get voice calls
-        voice_calls = 0
+            convo_count = len(convos.data or [])
+            msg_count = sum(len(c.get("messages", []) or []) for c in (convos.data or []))
+
+            chatbot_data = {
+                "enabled": True,
+                "total_conversations": convo_count,
+                "total_messages": msg_count,
+                "items": [{"name": chatbot.data.get("name", "Chatbot") if chatbot.data else "Chatbot", "conversations": convo_count, "messages": msg_count}]
+            }
+            total_interactions += convo_count
+            total_messages += msg_count
+
+        # Get voice data
         if customer.get("voice_assistant_id"):
-            calls_result = supabase_admin.table("voice_assistant_calls").select(
-                "id", count="exact"
-            ).eq("assistant_id", customer["voice_assistant_id"]).gte("started_at", week_ago).execute()
-            voice_calls = calls_result.count or 0
+            assistant = supabase_admin.table("voice_assistants").select("id, name").eq("id", customer["voice_assistant_id"]).single().execute()
+            calls = supabase_admin.table("voice_assistant_calls").select("id, duration").eq("assistant_id", customer["voice_assistant_id"]).gte("started_at", week_ago).execute()
 
-        # Get WhatsApp conversations
-        whatsapp_convos = 0
+            call_count = len(calls.data or [])
+            duration_secs = sum(c.get("duration", 0) or 0 for c in (calls.data or []))
+
+            voice_data = {
+                "enabled": True,
+                "total_calls": call_count,
+                "total_duration": format_duration(duration_secs),
+                "items": [{"name": assistant.data.get("name", "Voice Assistant") if assistant.data else "Voice Assistant", "calls": call_count, "duration": format_duration(duration_secs)}]
+            }
+            total_interactions += call_count
+            total_call_duration += duration_secs
+
+        # Get WhatsApp data
         if customer.get("whatsapp_agent_id"):
-            wa_result = supabase_admin.table("whatsapp_conversations").select(
-                "id", count="exact"
-            ).eq("agent_id", customer["whatsapp_agent_id"]).gte("started_at", week_ago).execute()
-            whatsapp_convos = wa_result.count or 0
+            agent = supabase_admin.table("whatsapp_agents").select("id, name").eq("id", customer["whatsapp_agent_id"]).single().execute()
+            wa_convos = supabase_admin.table("whatsapp_conversations").select("id, transcript").eq("agent_id", customer["whatsapp_agent_id"]).gte("started_at", week_ago).execute()
 
-        # Get support tickets
-        tickets_result = supabase_admin.table("support_tickets").select(
-            "id, subject, status"
-        ).eq("customer_id", customer_id).gte("created_at", week_ago).execute()
+            wa_convo_count = len(wa_convos.data or [])
+            wa_msg_count = sum(len(c.get("transcript", []) or []) for c in (wa_convos.data or []))
 
-        open_tickets = [t for t in (tickets_result.data or []) if t["status"] == "open"]
-        resolved_tickets = [t for t in (tickets_result.data or []) if t["status"] in ["resolved", "closed"]]
+            whatsapp_data = {
+                "enabled": True,
+                "total_conversations": wa_convo_count,
+                "total_messages": wa_msg_count,
+                "items": [{"name": agent.data.get("name", "WhatsApp Agent") if agent.data else "WhatsApp Agent", "conversations": wa_convo_count, "messages": wa_msg_count}]
+            }
+            total_interactions += wa_convo_count
+            total_messages += wa_msg_count
 
-        # Get leads generated
-        leads_result = supabase_admin.table("leads").select(
-            "id", count="exact"
-        ).eq("user_id", customer.get("created_by_user_id")).gte("created_at", week_ago).execute()
+        # Get leads
+        leads_result = supabase_admin.table("leads").select("id", count="exact").eq("user_id", customer.get("created_by_user_id")).gte("created_at", week_ago).execute()
 
-        total_interactions = chatbot_convos + voice_calls + whatsapp_convos
-        leads_count = leads_result.count or 0
+        # Get custom branding for the admin
+        custom_logo_url = None
+        custom_primary_color = None
+        if customer.get("created_by_user_id"):
+            branding_result = supabase_admin.table("branding_settings").select(
+                "logo_url, primary_color"
+            ).eq("user_id", customer["created_by_user_id"]).maybeSingle().execute()
+            if branding_result.data:
+                custom_logo_url = branding_result.data.get("logo_url")
+                custom_primary_color = branding_result.data.get("primary_color")
 
-        # Build breakdown rows only for connected agents
-        breakdown_rows = ""
-        if customer.get("chatbot_id"):
-            breakdown_rows += f"""
-            <tr>
-                <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #475569; font-size: 14px;">Chatbot Conversations</td>
-                <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a; font-size: 14px; font-weight: 600; text-align: right;">{chatbot_convos}</td>
-            </tr>"""
-        if customer.get("voice_assistant_id"):
-            breakdown_rows += f"""
-            <tr>
-                <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #475569; font-size: 14px;">Voice Assistant Calls</td>
-                <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a; font-size: 14px; font-weight: 600; text-align: right;">{voice_calls}</td>
-            </tr>"""
-        if customer.get("whatsapp_agent_id"):
-            breakdown_rows += f"""
-            <tr>
-                <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #475569; font-size: 14px;">WhatsApp Conversations</td>
-                <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a; font-size: 14px; font-weight: 600; text-align: right;">{whatsapp_convos}</td>
-            </tr>"""
+        overall_stats = {
+            "total_interactions": total_interactions,
+            "total_messages": total_messages,
+            "call_duration": format_duration(total_call_duration),
+            "leads_generated": leads_result.count or 0
+        }
 
-        # Always show support tickets
-        breakdown_rows += f"""
-        <tr>
-            <td style="padding: 12px 0; color: #475569; font-size: 14px;">Support Tickets</td>
-            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600; text-align: right;">{len(tickets_result.data or [])} ({len(open_tickets)} open)</td>
-        </tr>"""
-
-        html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        </head>
-        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; margin: 0; padding: 0; background-color: #f8fafc;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 40px 20px;">
-                <div style="background-color: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);">
-                    <!-- Header -->
-                    <div style="background: linear-gradient(135deg, #e45133 0%, #f97316 100%); padding: 32px; text-align: center;">
-                        <img src="https://ik.imagekit.io/wrewtbha2/Voxtro%20(1920%20x%201080%20px)%20(3).png" alt="Voxtro" style="height: 40px; margin-bottom: 16px;" />
-                        <h1 style="color: white; font-size: 24px; font-weight: 600; margin: 0;">Weekly Activity Report</h1>
-                        <p style="color: rgba(255,255,255,0.9); font-size: 14px; margin: 8px 0 0 0;">{datetime.utcnow().strftime('%B %d, %Y')}</p>
-                    </div>
-
-                    <!-- Content -->
-                    <div style="padding: 32px;">
-                        <p style="color: #334155; font-size: 16px; line-height: 24px; margin: 0 0 24px 0;">
-                            Hi {customer.get('full_name', 'there')},
-                        </p>
-                        <p style="color: #64748b; font-size: 15px; line-height: 24px; margin: 0 0 32px 0;">
-                            Here's a summary of your AI agents' activity over the past week.
-                        </p>
-
-                        <!-- Stats Grid -->
-                        <div style="display: table; width: 100%; margin-bottom: 32px;">
-                            <div style="display: table-row;">
-                                <div style="display: table-cell; width: 50%; padding: 0 8px 16px 0; vertical-align: top;">
-                                    <div style="background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center;">
-                                        <p style="color: #64748b; font-size: 13px; margin: 0 0 4px 0; text-transform: uppercase; letter-spacing: 0.5px;">Total Interactions</p>
-                                        <p style="color: #0f172a; font-size: 32px; font-weight: 700; margin: 0;">{total_interactions}</p>
-                                    </div>
-                                </div>
-                                <div style="display: table-cell; width: 50%; padding: 0 0 16px 8px; vertical-align: top;">
-                                    <div style="background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center;">
-                                        <p style="color: #64748b; font-size: 13px; margin: 0 0 4px 0; text-transform: uppercase; letter-spacing: 0.5px;">Leads Generated</p>
-                                        <p style="color: #0f172a; font-size: 32px; font-weight: 700; margin: 0;">{leads_count}</p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Breakdown -->
-                        <div style="background: #fafafa; border-radius: 12px; padding: 24px; margin-bottom: 32px;">
-                            <h3 style="color: #0f172a; font-size: 14px; font-weight: 600; margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">Activity Breakdown</h3>
-                            <table style="width: 100%; border-collapse: collapse;">
-                                {breakdown_rows}
-                            </table>
-                        </div>
-
-                        <!-- CTA Button -->
-                        <div style="text-align: center; margin-bottom: 24px;">
-                            <a href="{settings.frontend_url}/customer-login" style="display: inline-block; background: linear-gradient(135deg, #e45133 0%, #f97316 100%); color: white; font-size: 15px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px;">
-                                View Full Dashboard
-                            </a>
-                        </div>
-
-                        <p style="color: #94a3b8; font-size: 13px; line-height: 20px; margin: 0; text-align: center;">
-                            Questions? Reply to this email or open a support ticket in your portal.
-                        </p>
-                    </div>
-
-                    <!-- Footer -->
-                    <div style="background: #f8fafc; padding: 24px 32px; border-top: 1px solid #e2e8f0;">
-                        <p style="color: #94a3b8; font-size: 12px; margin: 0; text-align: center;">
-                            You're receiving this because you're a Voxtro customer.
-                        </p>
-                        <p style="color: #94a3b8; font-size: 12px; margin: 8px 0 0 0; text-align: center;">
-                            © {datetime.utcnow().year} Voxtro. All rights reserved.
-                        </p>
-                    </div>
-                </div>
-            </div>
-        </body>
-        </html>
-        """
+        html_content = generate_weekly_email_html(
+            customer_name=customer.get("full_name", "there"),
+            week_range=week_range,
+            portal_url=f"{settings.frontend_url}/customer-login",
+            support_url=f"{settings.frontend_url}/customer-login",
+            overall_stats=overall_stats,
+            chatbot_data=chatbot_data,
+            voice_data=voice_data,
+            whatsapp_data=whatsapp_data,
+            year=now.year,
+            custom_logo_url=custom_logo_url,
+            custom_primary_color=custom_primary_color
+        )
 
         email = EmailNotification(
             to_email=customer["email"],
-            subject=f"Your Weekly Activity Report - {datetime.utcnow().strftime('%B %d, %Y')}",
+            subject=f"Your Weekly Agent Summary - {week_range}",
             html_content=html_content,
             from_name="Voxtro"
         )
 
         await send_email(email)
-
         return {"success": True, "customer_id": customer_id}
 
     except HTTPException:
@@ -515,156 +826,109 @@ async def cron_weekly_emails(cron_secret: str):
         emails_sent = 0
         errors = []
 
+        now = datetime.utcnow()
+        week_range = f"{(now - timedelta(days=7)).strftime('%b %d')} - {now.strftime('%b %d, %Y')}"
+
         for i, customer in enumerate(customers_result.data):
             try:
-                # Get metrics based on connected agents
-                chatbot_convos = 0
-                voice_calls = 0
-                whatsapp_convos = 0
+                # Initialize stats
+                total_interactions = 0
+                total_messages = 0
+                total_call_duration = 0
 
+                chatbot_data = {"enabled": False, "items": [], "total_conversations": 0, "total_messages": 0}
+                voice_data = {"enabled": False, "items": [], "total_calls": 0, "total_duration": "0m"}
+                whatsapp_data = {"enabled": False, "items": [], "total_conversations": 0, "total_messages": 0}
+
+                # Get chatbot data
                 if customer.get("chatbot_id"):
-                    convos_result = supabase_admin.table("conversations").select(
-                        "id", count="exact"
-                    ).eq("chatbot_id", customer["chatbot_id"]).gte("created_at", week_ago).execute()
-                    chatbot_convos = convos_result.count or 0
+                    chatbot = supabase_admin.table("chatbots").select("id, name").eq("id", customer["chatbot_id"]).maybeSingle().execute()
+                    convos = supabase_admin.table("conversations").select("id, messages").eq("chatbot_id", customer["chatbot_id"]).gte("created_at", week_ago).execute()
 
+                    convo_count = len(convos.data or [])
+                    msg_count = sum(len(c.get("messages", []) or []) for c in (convos.data or []))
+
+                    chatbot_data = {
+                        "enabled": True,
+                        "total_conversations": convo_count,
+                        "total_messages": msg_count,
+                        "items": [{"name": chatbot.data.get("name", "Chatbot") if chatbot.data else "Chatbot", "conversations": convo_count, "messages": msg_count}]
+                    }
+                    total_interactions += convo_count
+                    total_messages += msg_count
+
+                # Get voice data
                 if customer.get("voice_assistant_id"):
-                    calls_result = supabase_admin.table("voice_assistant_calls").select(
-                        "id", count="exact"
-                    ).eq("assistant_id", customer["voice_assistant_id"]).gte("started_at", week_ago).execute()
-                    voice_calls = calls_result.count or 0
+                    assistant = supabase_admin.table("voice_assistants").select("id, name").eq("id", customer["voice_assistant_id"]).maybeSingle().execute()
+                    calls = supabase_admin.table("voice_assistant_calls").select("id, duration").eq("assistant_id", customer["voice_assistant_id"]).gte("started_at", week_ago).execute()
 
+                    call_count = len(calls.data or [])
+                    duration_secs = sum(c.get("duration", 0) or 0 for c in (calls.data or []))
+
+                    voice_data = {
+                        "enabled": True,
+                        "total_calls": call_count,
+                        "total_duration": format_duration(duration_secs),
+                        "items": [{"name": assistant.data.get("name", "Voice Assistant") if assistant.data else "Voice Assistant", "calls": call_count, "duration": format_duration(duration_secs)}]
+                    }
+                    total_interactions += call_count
+                    total_call_duration += duration_secs
+
+                # Get WhatsApp data
                 if customer.get("whatsapp_agent_id"):
-                    wa_result = supabase_admin.table("whatsapp_conversations").select(
-                        "id", count="exact"
-                    ).eq("agent_id", customer["whatsapp_agent_id"]).gte("started_at", week_ago).execute()
-                    whatsapp_convos = wa_result.count or 0
+                    agent = supabase_admin.table("whatsapp_agents").select("id, name").eq("id", customer["whatsapp_agent_id"]).maybeSingle().execute()
+                    wa_convos = supabase_admin.table("whatsapp_conversations").select("id, transcript").eq("agent_id", customer["whatsapp_agent_id"]).gte("started_at", week_ago).execute()
 
-                # Get support tickets
-                tickets_result = supabase_admin.table("support_tickets").select(
-                    "id, subject, status"
-                ).eq("customer_id", customer["id"]).gte("created_at", week_ago).execute()
+                    wa_convo_count = len(wa_convos.data or [])
+                    wa_msg_count = sum(len(c.get("transcript", []) or []) for c in (wa_convos.data or []))
 
-                open_tickets = [t for t in (tickets_result.data or []) if t["status"] == "open"]
+                    whatsapp_data = {
+                        "enabled": True,
+                        "total_conversations": wa_convo_count,
+                        "total_messages": wa_msg_count,
+                        "items": [{"name": agent.data.get("name", "WhatsApp Agent") if agent.data else "WhatsApp Agent", "conversations": wa_convo_count, "messages": wa_msg_count}]
+                    }
+                    total_interactions += wa_convo_count
+                    total_messages += wa_msg_count
 
-                # Get leads generated for this customer's admin
-                leads_result = supabase_admin.table("leads").select(
-                    "id", count="exact"
-                ).eq("user_id", customer.get("created_by_user_id")).gte("created_at", week_ago).execute()
+                # Get leads
+                leads_result = supabase_admin.table("leads").select("id", count="exact").eq("user_id", customer.get("created_by_user_id")).gte("created_at", week_ago).execute()
 
-                total_interactions = chatbot_convos + voice_calls + whatsapp_convos
-                leads_count = leads_result.count or 0
+                # Get custom branding for the admin
+                custom_logo_url = None
+                custom_primary_color = None
+                if customer.get("created_by_user_id"):
+                    branding_result = supabase_admin.table("branding_settings").select(
+                        "logo_url, primary_color"
+                    ).eq("user_id", customer["created_by_user_id"]).maybeSingle().execute()
+                    if branding_result.data:
+                        custom_logo_url = branding_result.data.get("logo_url")
+                        custom_primary_color = branding_result.data.get("primary_color")
 
-                # Build breakdown rows only for connected agents
-                breakdown_rows = ""
-                if customer.get("chatbot_id"):
-                    breakdown_rows += f"""
-                    <tr>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #475569; font-size: 14px;">Chatbot Conversations</td>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a; font-size: 14px; font-weight: 600; text-align: right;">{chatbot_convos}</td>
-                    </tr>"""
-                if customer.get("voice_assistant_id"):
-                    breakdown_rows += f"""
-                    <tr>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #475569; font-size: 14px;">Voice Assistant Calls</td>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a; font-size: 14px; font-weight: 600; text-align: right;">{voice_calls}</td>
-                    </tr>"""
-                if customer.get("whatsapp_agent_id"):
-                    breakdown_rows += f"""
-                    <tr>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #475569; font-size: 14px;">WhatsApp Conversations</td>
-                        <td style="padding: 12px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a; font-size: 14px; font-weight: 600; text-align: right;">{whatsapp_convos}</td>
-                    </tr>"""
+                overall_stats = {
+                    "total_interactions": total_interactions,
+                    "total_messages": total_messages,
+                    "call_duration": format_duration(total_call_duration),
+                    "leads_generated": leads_result.count or 0
+                }
 
-                # Always show support tickets
-                breakdown_rows += f"""
-                <tr>
-                    <td style="padding: 12px 0; color: #475569; font-size: 14px;">Support Tickets</td>
-                    <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600; text-align: right;">{len(tickets_result.data or [])} ({len(open_tickets)} open)</td>
-                </tr>"""
-
-                html_content = f"""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <meta charset="utf-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                </head>
-                <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; margin: 0; padding: 0; background-color: #f8fafc;">
-                    <div style="max-width: 600px; margin: 0 auto; padding: 40px 20px;">
-                        <div style="background-color: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06);">
-                            <!-- Header -->
-                            <div style="background: linear-gradient(135deg, #e45133 0%, #f97316 100%); padding: 32px; text-align: center;">
-                                <img src="https://ik.imagekit.io/wrewtbha2/Voxtro%20(1920%20x%201080%20px)%20(3).png" alt="Voxtro" style="height: 40px; margin-bottom: 16px;" />
-                                <h1 style="color: white; font-size: 24px; font-weight: 600; margin: 0;">Weekly Activity Report</h1>
-                                <p style="color: rgba(255,255,255,0.9); font-size: 14px; margin: 8px 0 0 0;">{datetime.utcnow().strftime('%B %d, %Y')}</p>
-                            </div>
-
-                            <!-- Content -->
-                            <div style="padding: 32px;">
-                                <p style="color: #334155; font-size: 16px; line-height: 24px; margin: 0 0 24px 0;">
-                                    Hi {customer.get('full_name', 'there')},
-                                </p>
-                                <p style="color: #64748b; font-size: 15px; line-height: 24px; margin: 0 0 32px 0;">
-                                    Here's a summary of your AI agents' activity over the past week.
-                                </p>
-
-                                <!-- Stats Grid -->
-                                <div style="display: table; width: 100%; margin-bottom: 32px;">
-                                    <div style="display: table-row;">
-                                        <div style="display: table-cell; width: 50%; padding: 0 8px 16px 0; vertical-align: top;">
-                                            <div style="background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center;">
-                                                <p style="color: #64748b; font-size: 13px; margin: 0 0 4px 0; text-transform: uppercase; letter-spacing: 0.5px;">Total Interactions</p>
-                                                <p style="color: #0f172a; font-size: 32px; font-weight: 700; margin: 0;">{total_interactions}</p>
-                                            </div>
-                                        </div>
-                                        <div style="display: table-cell; width: 50%; padding: 0 0 16px 8px; vertical-align: top;">
-                                            <div style="background: #f1f5f9; border-radius: 12px; padding: 20px; text-align: center;">
-                                                <p style="color: #64748b; font-size: 13px; margin: 0 0 4px 0; text-transform: uppercase; letter-spacing: 0.5px;">Leads Generated</p>
-                                                <p style="color: #0f172a; font-size: 32px; font-weight: 700; margin: 0;">{leads_count}</p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <!-- Breakdown -->
-                                <div style="background: #fafafa; border-radius: 12px; padding: 24px; margin-bottom: 32px;">
-                                    <h3 style="color: #0f172a; font-size: 14px; font-weight: 600; margin: 0 0 16px 0; text-transform: uppercase; letter-spacing: 0.5px;">Activity Breakdown</h3>
-                                    <table style="width: 100%; border-collapse: collapse;">
-                                        {breakdown_rows}
-                                    </table>
-                                </div>
-
-                                <!-- CTA Button -->
-                                <div style="text-align: center; margin-bottom: 24px;">
-                                    <a href="{settings.frontend_url}/customer-login" style="display: inline-block; background: linear-gradient(135deg, #e45133 0%, #f97316 100%); color: white; font-size: 15px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px;">
-                                        View Full Dashboard
-                                    </a>
-                                </div>
-
-                                <p style="color: #94a3b8; font-size: 13px; line-height: 20px; margin: 0; text-align: center;">
-                                    Questions? Reply to this email or open a support ticket in your portal.
-                                </p>
-                            </div>
-
-                            <!-- Footer -->
-                            <div style="background: #f8fafc; padding: 24px 32px; border-top: 1px solid #e2e8f0;">
-                                <p style="color: #94a3b8; font-size: 12px; margin: 0; text-align: center;">
-                                    You're receiving this because you're a Voxtro customer.
-                                </p>
-                                <p style="color: #94a3b8; font-size: 12px; margin: 8px 0 0 0; text-align: center;">
-                                    © {datetime.utcnow().year} Voxtro. All rights reserved.
-                                </p>
-                            </div>
-                        </div>
-                    </div>
-                </body>
-                </html>
-                """
+                html_content = generate_weekly_email_html(
+                    customer_name=customer.get("full_name", "there"),
+                    week_range=week_range,
+                    portal_url=f"{settings.frontend_url}/customer-login",
+                    support_url=f"{settings.frontend_url}/customer-login",
+                    overall_stats=overall_stats,
+                    chatbot_data=chatbot_data,
+                    voice_data=voice_data,
+                    whatsapp_data=whatsapp_data,
+                    year=now.year,
+                    custom_logo_url=custom_logo_url,
+                    custom_primary_color=custom_primary_color
+                )
 
                 email = EmailNotification(
                     to_email=customer["email"],
-                    subject=f"Your Weekly Activity Report - {datetime.utcnow().strftime('%B %d, %Y')}",
+                    subject=f"Your Weekly Agent Summary - {week_range}",
                     html_content=html_content,
                     from_name="Voxtro"
                 )
