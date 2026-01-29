@@ -1192,13 +1192,16 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                             if not call_id:
                                 continue
 
-                            # Check if call already exists
+                            # Check if call already exists and if it has a summary
                             existing = supabase_admin.table("voice_assistant_calls").select(
-                                "id"
+                                "id, summary"
                             ).eq("id", call_id).execute()
 
-                            if existing.data:
-                                continue  # Already synced
+                            is_new_call = not existing.data
+                            needs_summary = is_new_call or (existing.data and not existing.data[0].get("summary"))
+
+                            if existing.data and not needs_summary:
+                                continue  # Already synced with summary
 
                             # Get call details
                             call_detail_response = await client.get(
@@ -1279,6 +1282,34 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                         except Exception as ai_error:
                                             logger.warning(f"AI summary generation failed for call {call_id}: {ai_error}")
                                             # Don't fail the sync - just skip AI summary
+                                elif needs_summary:
+                                    # Existing transcripts but no summary - generate AI summary now
+                                    try:
+                                        existing_transcripts = supabase_admin.table("voice_assistant_transcripts").select(
+                                            "role, content"
+                                        ).eq("call_id", call_id).order("timestamp").execute()
+
+                                        if existing_transcripts.data:
+                                            transcript_text = "\n".join([
+                                                f"{t['role']}: {t['content']}" for t in existing_transcripts.data
+                                            ])
+                                            if transcript_text.strip():
+                                                from app.routers.webhooks import generate_call_summary
+                                                summary = await generate_call_summary(call_id, transcript_text, owner_user_id)
+                                                if summary:
+                                                    supabase_admin.table("voice_assistant_calls").update({
+                                                        "summary": summary.get("summary"),
+                                                        "key_points": summary.get("key_points"),
+                                                        "action_items": summary.get("action_items"),
+                                                        "sentiment": summary.get("sentiment"),
+                                                        "sentiment_notes": summary.get("sentiment_notes"),
+                                                        "call_outcome": summary.get("call_outcome"),
+                                                        "topics_discussed": summary.get("topics_discussed"),
+                                                        "lead_info": summary.get("lead_info")
+                                                    }).eq("id", call_id).execute()
+                                                    logger.info(f"Generated AI summary for existing call {call_id}")
+                                    except Exception as ai_error:
+                                        logger.warning(f"AI summary generation failed for existing call {call_id}: {ai_error}")
 
                             # Insert recording if available
                             recording_url = artifact.get("recordingUrl") or call_detail.get("recordingUrl")
