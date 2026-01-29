@@ -232,13 +232,13 @@ async def background_sync_all_voice():
     logger.info("Starting scheduled Voice sync...")
 
     try:
-        # Get all active VAPI connections
-        connections = supabase_admin.table("vapi_connections").select(
+        # Get all active VAPI connections (stored in voice_connections table)
+        connections = supabase_admin.table("voice_connections").select(
             "user_id, api_key"
         ).eq("is_active", True).execute()
 
         if not connections.data:
-            logger.info("No active VAPI connections found")
+            logger.info("No active voice connections found")
             return
 
         total_synced = 0
@@ -753,13 +753,13 @@ async def sync_all_voice_calls(
     This fetches calls from VAPI and generates AI summaries.
     """
     try:
-        # Get all active VAPI connections
-        connections = supabase_admin.table("vapi_connections").select(
+        # Get all active VAPI connections (stored in voice_connections table)
+        connections = supabase_admin.table("voice_connections").select(
             "user_id, api_key"
         ).eq("is_active", True).execute()
 
         if not connections.data:
-            return {"success": True, "message": "No active VAPI connections found", "total_synced": 0}
+            return {"success": True, "message": "No active voice connections found", "total_synced": 0}
 
         total_synced = 0
         total_summaries = 0
