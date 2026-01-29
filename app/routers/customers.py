@@ -884,10 +884,11 @@ async def get_customer_chatbot_conversations(auth_data: Dict = Depends(get_curre
         chatbot_ids = [a["chatbot_id"] for a in chatbot_assignments.data]
         chatbot_names = {a["chatbot_id"]: a.get("chatbots", {}).get("name", "Unknown") for a in chatbot_assignments.data}
 
-        # Get recent conversations with lead_info
+        # Get recent conversations - only use columns that exist in conversations table
+        # The conversations table has: id, chatbot_id, visitor_id, created_at, status, ended_at, lead_analyzed_at
         conversations = supabase_admin.table("conversations").select(
-            "id, chatbot_id, created_at, updated_at, lead_info, summary"
-        ).in_("chatbot_id", chatbot_ids).order("updated_at", desc=True).limit(20).execute()
+            "id, chatbot_id, created_at, status"
+        ).in_("chatbot_id", chatbot_ids).order("created_at", desc=True).limit(20).execute()
 
         result = []
         for conv in (conversations.data or []):
@@ -901,14 +902,29 @@ async def get_customer_chatbot_conversations(auth_data: Dict = Depends(get_curre
                 "id", count="exact"
             ).eq("conversation_id", conv["id"]).execute()
 
+            # Check if there's a lead in the leads table for this conversation
+            lead_result = supabase_admin.table("leads").select(
+                "name, email, phone_number, additional_data"
+            ).eq("conversation_id", conv["id"]).limit(1).execute()
+
+            lead_info = None
+            if lead_result.data:
+                lead = lead_result.data[0]
+                lead_info = {
+                    "name": lead.get("name"),
+                    "email": lead.get("email"),
+                    "phone": lead.get("phone_number"),
+                    "company": lead.get("additional_data", {}).get("company") if lead.get("additional_data") else None
+                }
+
             result.append({
                 "id": conv["id"],
                 "chatbot_id": conv["chatbot_id"],
                 "chatbot_name": chatbot_names.get(conv["chatbot_id"], "Unknown"),
                 "created_at": conv["created_at"],
-                "updated_at": conv["updated_at"],
-                "lead_info": conv.get("lead_info"),
-                "summary": conv.get("summary"),
+                "updated_at": conv["created_at"],  # Use created_at as fallback
+                "lead_info": lead_info,
+                "summary": None,  # Chatbot conversations don't have summary column
                 "message_count": msg_count_result.count or 0,
                 "last_message": {
                     "content": last_message["content"][:100] + "..." if last_message and len(last_message["content"]) > 100 else (last_message["content"] if last_message else None),
@@ -1020,9 +1036,10 @@ async def get_customer_whatsapp_conversation_logs(auth_data: Dict = Depends(get_
         agent_names = {a["agent_id"]: a.get("whatsapp_agents", {}).get("name", "Unknown") for a in wa_assignments.data}
         agent_phones = {a["agent_id"]: a.get("whatsapp_agents", {}).get("phone_number") for a in wa_assignments.data}
 
-        # Get recent conversations with AI analysis
+        # Get recent conversations - only use columns that exist in whatsapp_conversations table
+        # The table has: id, agent_id, customer_id, phone_number, status, started_at, ended_at, summary, sentiment, created_at, updated_at, lead_analyzed_at
         conversations = supabase_admin.table("whatsapp_conversations").select(
-            "id, agent_id, phone_number, status, started_at, ended_at, summary, key_points, action_items, sentiment, sentiment_notes, conversation_outcome, topics_discussed, lead_info"
+            "id, agent_id, phone_number, status, started_at, ended_at, summary, sentiment"
         ).in_("agent_id", agent_ids).order("started_at", desc=True).limit(20).execute()
 
         result = []
@@ -1031,6 +1048,21 @@ async def get_customer_whatsapp_conversation_logs(auth_data: Dict = Depends(get_
             msg_count_result = supabase_admin.table("whatsapp_messages").select(
                 "id", count="exact"
             ).eq("conversation_id", conv["id"]).execute()
+
+            # Check if there's a lead in the leads table for this conversation
+            lead_result = supabase_admin.table("leads").select(
+                "name, email, phone_number, additional_data"
+            ).eq("conversation_id", str(conv["id"])).limit(1).execute()
+
+            lead_info = None
+            if lead_result.data:
+                lead = lead_result.data[0]
+                lead_info = {
+                    "name": lead.get("name"),
+                    "email": lead.get("email"),
+                    "phone": lead.get("phone_number"),
+                    "company": lead.get("additional_data", {}).get("company") if lead.get("additional_data") else None
+                }
 
             result.append({
                 "id": conv["id"],
@@ -1044,13 +1076,13 @@ async def get_customer_whatsapp_conversation_logs(auth_data: Dict = Depends(get_
                 "message_count": msg_count_result.count or 0,
                 "analysis": {
                     "summary": conv.get("summary"),
-                    "key_points": conv.get("key_points"),
-                    "action_items": conv.get("action_items"),
+                    "key_points": None,  # Column doesn't exist
+                    "action_items": None,  # Column doesn't exist
                     "sentiment": conv.get("sentiment"),
-                    "sentiment_notes": conv.get("sentiment_notes"),
-                    "conversation_outcome": conv.get("conversation_outcome"),
-                    "topics_discussed": conv.get("topics_discussed"),
-                    "lead_info": conv.get("lead_info")
+                    "sentiment_notes": None,  # Column doesn't exist
+                    "conversation_outcome": None,  # Column doesn't exist
+                    "topics_discussed": None,  # Column doesn't exist
+                    "lead_info": lead_info
                 }
             })
 
