@@ -857,6 +857,212 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/portal/chatbot-conversations")
+async def get_customer_chatbot_conversations(auth_data: Dict = Depends(get_current_customer)):
+    """Get recent chatbot conversations with AI analysis for customer's assigned chatbots"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Get chatbot assignments
+        chatbot_assignments = supabase_admin.table("customer_chatbot_assignments").select(
+            "chatbot_id, chatbots(id, name)"
+        ).eq("customer_id", customer_id).execute()
+
+        if not chatbot_assignments.data:
+            return {"conversations": []}
+
+        chatbot_ids = [a["chatbot_id"] for a in chatbot_assignments.data]
+        chatbot_names = {a["chatbot_id"]: a.get("chatbots", {}).get("name", "Unknown") for a in chatbot_assignments.data}
+
+        # Get recent conversations with lead_info
+        conversations = supabase_admin.table("conversations").select(
+            "id, chatbot_id, created_at, updated_at, lead_info, summary"
+        ).in_("chatbot_id", chatbot_ids).order("updated_at", desc=True).limit(20).execute()
+
+        result = []
+        for conv in (conversations.data or []):
+            # Get message count and last message preview
+            messages = supabase_admin.table("messages").select(
+                "content, role, created_at"
+            ).eq("conversation_id", conv["id"]).order("created_at", desc=True).limit(1).execute()
+
+            last_message = messages.data[0] if messages.data else None
+            msg_count_result = supabase_admin.table("messages").select(
+                "id", count="exact"
+            ).eq("conversation_id", conv["id"]).execute()
+
+            result.append({
+                "id": conv["id"],
+                "chatbot_id": conv["chatbot_id"],
+                "chatbot_name": chatbot_names.get(conv["chatbot_id"], "Unknown"),
+                "created_at": conv["created_at"],
+                "updated_at": conv["updated_at"],
+                "lead_info": conv.get("lead_info"),
+                "summary": conv.get("summary"),
+                "message_count": msg_count_result.count or 0,
+                "last_message": {
+                    "content": last_message["content"][:100] + "..." if last_message and len(last_message["content"]) > 100 else (last_message["content"] if last_message else None),
+                    "role": last_message["role"] if last_message else None,
+                    "created_at": last_message["created_at"] if last_message else None
+                } if last_message else None
+            })
+
+        return {"conversations": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get customer chatbot conversations error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/portal/voice-call-logs")
+async def get_customer_voice_call_logs(auth_data: Dict = Depends(get_current_customer)):
+    """Get recent voice calls with AI analysis for customer's assigned assistants"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Get voice assistant assignments
+        voice_assignments = supabase_admin.table("customer_assistant_assignments").select(
+            "assistant_id, voice_assistants(id, name, phone_number)"
+        ).eq("customer_id", customer_id).execute()
+
+        if not voice_assignments.data:
+            return {"calls": []}
+
+        assistant_ids = [a["assistant_id"] for a in voice_assignments.data]
+        assistant_names = {a["assistant_id"]: a.get("voice_assistants", {}).get("name", "Unknown") for a in voice_assignments.data}
+        assistant_phones = {a["assistant_id"]: a.get("voice_assistants", {}).get("phone_number") for a in voice_assignments.data}
+
+        # Get recent calls with AI analysis
+        calls = supabase_admin.table("voice_assistant_calls").select(
+            "id, assistant_id, phone_number, status, started_at, ended_at, duration_seconds, summary, key_points, action_items, sentiment, sentiment_notes, call_outcome, topics_discussed, lead_info"
+        ).in_("assistant_id", assistant_ids).order("started_at", desc=True).limit(20).execute()
+
+        result = []
+        for call in (calls.data or []):
+            result.append({
+                "id": call["id"],
+                "assistant_id": call["assistant_id"],
+                "assistant_name": assistant_names.get(call["assistant_id"], "Unknown"),
+                "assistant_phone": assistant_phones.get(call["assistant_id"]),
+                "caller_phone": call.get("phone_number"),
+                "status": call.get("status"),
+                "started_at": call.get("started_at"),
+                "ended_at": call.get("ended_at"),
+                "duration_seconds": call.get("duration_seconds", 0),
+                "analysis": {
+                    "summary": call.get("summary"),
+                    "key_points": call.get("key_points"),
+                    "action_items": call.get("action_items"),
+                    "sentiment": call.get("sentiment"),
+                    "sentiment_notes": call.get("sentiment_notes"),
+                    "call_outcome": call.get("call_outcome"),
+                    "topics_discussed": call.get("topics_discussed"),
+                    "lead_info": call.get("lead_info")
+                }
+            })
+
+        return {"calls": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get customer voice call logs error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/portal/whatsapp-conversation-logs")
+async def get_customer_whatsapp_conversation_logs(auth_data: Dict = Depends(get_current_customer)):
+    """Get recent WhatsApp conversations with AI analysis for customer's assigned agents"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Get WhatsApp agent assignments
+        wa_assignments = supabase_admin.table("customer_whatsapp_agent_assignments").select(
+            "agent_id, whatsapp_agents(id, name, phone_number)"
+        ).eq("customer_id", customer_id).execute()
+
+        if not wa_assignments.data:
+            return {"conversations": []}
+
+        agent_ids = [a["agent_id"] for a in wa_assignments.data]
+        agent_names = {a["agent_id"]: a.get("whatsapp_agents", {}).get("name", "Unknown") for a in wa_assignments.data}
+        agent_phones = {a["agent_id"]: a.get("whatsapp_agents", {}).get("phone_number") for a in wa_assignments.data}
+
+        # Get recent conversations with AI analysis
+        conversations = supabase_admin.table("whatsapp_conversations").select(
+            "id, agent_id, phone_number, status, started_at, ended_at, summary, key_points, action_items, sentiment, sentiment_notes, conversation_outcome, topics_discussed, lead_info"
+        ).in_("agent_id", agent_ids).order("started_at", desc=True).limit(20).execute()
+
+        result = []
+        for conv in (conversations.data or []):
+            # Get message count
+            msg_count_result = supabase_admin.table("whatsapp_messages").select(
+                "id", count="exact"
+            ).eq("conversation_id", conv["id"]).execute()
+
+            result.append({
+                "id": conv["id"],
+                "agent_id": conv["agent_id"],
+                "agent_name": agent_names.get(conv["agent_id"], "Unknown"),
+                "agent_phone": agent_phones.get(conv["agent_id"]),
+                "customer_phone": conv.get("phone_number"),
+                "status": conv.get("status"),
+                "started_at": conv.get("started_at"),
+                "ended_at": conv.get("ended_at"),
+                "message_count": msg_count_result.count or 0,
+                "analysis": {
+                    "summary": conv.get("summary"),
+                    "key_points": conv.get("key_points"),
+                    "action_items": conv.get("action_items"),
+                    "sentiment": conv.get("sentiment"),
+                    "sentiment_notes": conv.get("sentiment_notes"),
+                    "conversation_outcome": conv.get("conversation_outcome"),
+                    "topics_discussed": conv.get("topics_discussed"),
+                    "lead_info": conv.get("lead_info")
+                }
+            })
+
+        return {"conversations": result}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get customer WhatsApp conversation logs error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/portal/sync-whatsapp-conversations")
 async def sync_customer_whatsapp_conversations(auth_data: Dict = Depends(get_current_customer)):
     """
