@@ -312,13 +312,23 @@ async def background_sync_all_voice():
                                     "started_at": started_at,
                                     "ended_at": ended_at,
                                     "duration_seconds": duration,
-                                    "recording_url": call.get("recordingUrl"),
-                                    "cost": call.get("cost")
                                 }
 
                                 supabase_admin.table("voice_assistant_calls").upsert(
                                     call_data, on_conflict="id"
                                 ).execute()
+
+                                # Save recording to separate table if available
+                                recording_url = call.get("recordingUrl")
+                                if recording_url:
+                                    existing_rec = supabase_admin.table("voice_assistant_recordings").select(
+                                        "id"
+                                    ).eq("call_id", call_id).limit(1).execute()
+                                    if not existing_rec.data:
+                                        supabase_admin.table("voice_assistant_recordings").insert({
+                                            "call_id": call_id,
+                                            "recording_url": recording_url
+                                        }).execute()
 
                                 # Get transcript
                                 transcript_text = ""
@@ -833,13 +843,23 @@ async def sync_all_voice_calls(
                                     "started_at": started_at,
                                     "ended_at": ended_at,
                                     "duration_seconds": duration,
-                                    "recording_url": call.get("recordingUrl"),
-                                    "cost": call.get("cost")
                                 }
 
                                 supabase_admin.table("voice_assistant_calls").upsert(
                                     call_data, on_conflict="id"
                                 ).execute()
+
+                                # Save recording to separate table if available
+                                recording_url = call.get("recordingUrl")
+                                if recording_url:
+                                    existing_rec = supabase_admin.table("voice_assistant_recordings").select(
+                                        "id"
+                                    ).eq("call_id", call_id).limit(1).execute()
+                                    if not existing_rec.data:
+                                        supabase_admin.table("voice_assistant_recordings").insert({
+                                            "call_id": call_id,
+                                            "recording_url": recording_url
+                                        }).execute()
 
                                 # Get transcript
                                 transcript_text = ""
