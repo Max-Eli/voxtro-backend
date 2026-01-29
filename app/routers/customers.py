@@ -1212,18 +1212,15 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                             call_detail = call_detail_response.json()
                             artifact = call_detail.get("artifact", {}) or {}
 
-                            # Upsert call record
+                            # Upsert call record (only columns that exist in voice_assistant_calls table)
                             call_data = {
                                 "id": call_id,
                                 "assistant_id": assistant_id,
-                                "vapi_assistant_id": call_detail.get("assistantId"),
                                 "phone_number": call_detail.get("customer", {}).get("number"),
                                 "status": call_detail.get("status", "completed"),
                                 "started_at": call_detail.get("startedAt"),
                                 "ended_at": call_detail.get("endedAt"),
                                 "duration_seconds": call_detail.get("durationSeconds") or 0,
-                                "recording_url": artifact.get("recordingUrl") or call_detail.get("recordingUrl"),
-                                "cost": call_detail.get("cost")
                             }
 
                             supabase_admin.table("voice_assistant_calls").upsert(
@@ -1258,6 +1255,19 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                         supabase_admin.table("voice_assistant_transcripts").insert(
                                             transcripts_to_insert
                                         ).execute()
+
+                            # Insert recording if available
+                            recording_url = artifact.get("recordingUrl") or call_detail.get("recordingUrl")
+                            if recording_url:
+                                existing_rec = supabase_admin.table("voice_assistant_recordings").select(
+                                    "id"
+                                ).eq("call_id", call_id).limit(1).execute()
+
+                                if not existing_rec.data:
+                                    supabase_admin.table("voice_assistant_recordings").insert({
+                                        "call_id": call_id,
+                                        "recording_url": recording_url
+                                    }).execute()
 
                             total_synced += 1
 
