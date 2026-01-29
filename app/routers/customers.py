@@ -985,6 +985,17 @@ async def get_customer_voice_call_logs(auth_data: Dict = Depends(get_current_cus
 
         result = []
         for call in (calls.data or []):
+            # Calculate duration - use stored value or calculate from timestamps
+            duration = call.get("duration_seconds") or 0
+            if not duration and call.get("started_at") and call.get("ended_at"):
+                try:
+                    from datetime import datetime
+                    started = datetime.fromisoformat(call["started_at"].replace("Z", "+00:00"))
+                    ended = datetime.fromisoformat(call["ended_at"].replace("Z", "+00:00"))
+                    duration = int((ended - started).total_seconds())
+                except Exception:
+                    duration = 0
+
             result.append({
                 "id": call["id"],
                 "assistant_id": call["assistant_id"],
@@ -994,7 +1005,7 @@ async def get_customer_voice_call_logs(auth_data: Dict = Depends(get_current_cus
                 "status": call.get("status"),
                 "started_at": call.get("started_at"),
                 "ended_at": call.get("ended_at"),
-                "duration_seconds": call.get("duration_seconds", 0),
+                "duration_seconds": duration,
                 "analysis": {
                     "summary": call.get("summary"),
                     "key_points": call.get("key_points"),
