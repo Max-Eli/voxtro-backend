@@ -1256,6 +1256,30 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                             transcripts_to_insert
                                         ).execute()
 
+                                        # Generate AI summary for the call (safe - won't break sync if fails)
+                                        try:
+                                            transcript_text = "\n".join([
+                                                f"{t['role']}: {t['content']}" for t in transcripts_to_insert
+                                            ])
+                                            if transcript_text.strip():
+                                                from app.routers.webhooks import generate_call_summary
+                                                summary = await generate_call_summary(call_id, transcript_text, owner_user_id)
+                                                if summary:
+                                                    supabase_admin.table("voice_assistant_calls").update({
+                                                        "summary": summary.get("summary"),
+                                                        "key_points": summary.get("key_points"),
+                                                        "action_items": summary.get("action_items"),
+                                                        "sentiment": summary.get("sentiment"),
+                                                        "sentiment_notes": summary.get("sentiment_notes"),
+                                                        "call_outcome": summary.get("call_outcome"),
+                                                        "topics_discussed": summary.get("topics_discussed"),
+                                                        "lead_info": summary.get("lead_info")
+                                                    }).eq("id", call_id).execute()
+                                                    logger.info(f"Generated AI summary for call {call_id}")
+                                        except Exception as ai_error:
+                                            logger.warning(f"AI summary generation failed for call {call_id}: {ai_error}")
+                                            # Don't fail the sync - just skip AI summary
+
                             # Insert recording if available
                             recording_url = artifact.get("recordingUrl") or call_detail.get("recordingUrl")
                             if recording_url:
