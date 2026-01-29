@@ -84,7 +84,18 @@ async def vapi_webhook(payload: VapiWebhookPayload):
             call_id = call.get("id")
             assistant_id = call.get("assistantId")
 
-            # Save call record
+            # Save call record - try multiple duration field names (VAPI uses different names)
+            duration = (
+                call.get("durationSeconds") or
+                call.get("duration") or
+                artifact.get("durationSeconds") or
+                artifact.get("duration") or
+                0
+            )
+            # If duration seems to be in milliseconds (> 10000), convert to seconds
+            if duration > 10000:
+                duration = duration // 1000
+
             call_data = {
                 "id": call_id,
                 "assistant_id": assistant_id,
@@ -92,7 +103,7 @@ async def vapi_webhook(payload: VapiWebhookPayload):
                 "status": call.get("status"),
                 "started_at": call.get("startedAt"),
                 "ended_at": call.get("endedAt"),
-                "duration_seconds": call.get("duration") or 0,
+                "duration_seconds": duration,
             }
 
             supabase_admin.table("voice_assistant_calls").upsert(

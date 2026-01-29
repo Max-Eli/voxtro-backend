@@ -1472,6 +1472,18 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                             call_detail = call_detail_response.json()
                             artifact = call_detail.get("artifact", {}) or {}
 
+                            # Extract duration - try multiple field names (VAPI uses different names)
+                            duration = (
+                                call_detail.get("durationSeconds") or
+                                call_detail.get("duration") or
+                                artifact.get("durationSeconds") or
+                                artifact.get("duration") or
+                                0
+                            )
+                            # If duration seems to be in milliseconds (> 10000), convert to seconds
+                            if duration > 10000:
+                                duration = duration // 1000
+
                             # Upsert call record (only columns that exist in voice_assistant_calls table)
                             call_data = {
                                 "id": call_id,
@@ -1480,7 +1492,7 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                 "status": call_detail.get("status", "completed"),
                                 "started_at": call_detail.get("startedAt"),
                                 "ended_at": call_detail.get("endedAt"),
-                                "duration_seconds": call_detail.get("durationSeconds") or 0,
+                                "duration_seconds": duration,
                             }
 
                             supabase_admin.table("voice_assistant_calls").upsert(
