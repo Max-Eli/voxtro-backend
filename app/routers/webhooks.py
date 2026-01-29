@@ -96,6 +96,16 @@ async def vapi_webhook(payload: VapiWebhookPayload):
             if duration > 10000:
                 duration = duration // 1000
 
+            # Fallback: calculate from timestamps if no duration available
+            if not duration and call.get("startedAt") and call.get("endedAt"):
+                try:
+                    from datetime import datetime
+                    started = datetime.fromisoformat(call["startedAt"].replace("Z", "+00:00"))
+                    ended = datetime.fromisoformat(call["endedAt"].replace("Z", "+00:00"))
+                    duration = int((ended - started).total_seconds())
+                except Exception:
+                    pass
+
             call_data = {
                 "id": call_id,
                 "assistant_id": assistant_id,

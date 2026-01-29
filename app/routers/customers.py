@@ -1449,16 +1449,18 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                             if not call_id:
                                 continue
 
-                            # Check if call already exists and if it has a summary
+                            # Check if call already exists and if it needs updating
                             existing = supabase_admin.table("voice_assistant_calls").select(
-                                "id, summary"
+                                "id, summary, duration_seconds"
                             ).eq("id", call_id).execute()
 
                             is_new_call = not existing.data
                             needs_summary = is_new_call or (existing.data and not existing.data[0].get("summary"))
+                            # Also re-sync if duration is missing (0 or NULL)
+                            needs_duration = is_new_call or (existing.data and not existing.data[0].get("duration_seconds"))
 
-                            if existing.data and not needs_summary:
-                                continue  # Already synced with summary
+                            if existing.data and not needs_summary and not needs_duration:
+                                continue  # Already synced with summary and duration
 
                             # Get call details
                             call_detail_response = await client.get(
@@ -1483,6 +1485,15 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                             # If duration seems to be in milliseconds (> 10000), convert to seconds
                             if duration > 10000:
                                 duration = duration // 1000
+
+                            # Fallback: calculate from timestamps if no duration available
+                            if not duration and call_detail.get("startedAt") and call_detail.get("endedAt"):
+                                try:
+                                    started = datetime.fromisoformat(call_detail["startedAt"].replace("Z", "+00:00"))
+                                    ended = datetime.fromisoformat(call_detail["endedAt"].replace("Z", "+00:00"))
+                                    duration = int((ended - started).total_seconds())
+                                except Exception:
+                                    pass
 
                             # Upsert call record (only columns that exist in voice_assistant_calls table)
                             call_data = {
