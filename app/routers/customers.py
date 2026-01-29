@@ -494,7 +494,7 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
 
                 # Voice leads are stored in voice_assistant_calls.lead_info JSON column
                 voice_calls = supabase_admin.table("voice_assistant_calls").select(
-                    "id, assistant_id, lead_info, started_at"
+                    "id, assistant_id, lead_info, started_at, phone_number"
                 ).in_("assistant_id", assistant_ids).not_.is_("lead_info", "null").order("started_at", desc=True).execute()
 
                 if voice_calls.data:
@@ -510,7 +510,11 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
                                 "name": lead_info.get("name"),
                                 "email": lead_info.get("email"),
                                 "phone_number": lead_info.get("phone"),
-                                "additional_data": {"company": lead_info.get("company"), "interest_level": lead_info.get("interest_level")},
+                                "additional_data": {
+                                    "company": lead_info.get("company"),
+                                    "interest_level": lead_info.get("interest_level"),
+                                    "caller_id": call.get("phone_number")  # The phone number the call came from
+                                },
                                 "extracted_at": call["started_at"]
                             })
         except Exception as e:
@@ -528,7 +532,7 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
 
                 # WhatsApp leads are stored in whatsapp_conversations.lead_info JSON column
                 wa_convos = supabase_admin.table("whatsapp_conversations").select(
-                    "id, agent_id, lead_info, created_at"
+                    "id, agent_id, lead_info, created_at, phone_number"
                 ).in_("agent_id", agent_ids).not_.is_("lead_info", "null").order("created_at", desc=True).execute()
 
                 if wa_convos.data:
@@ -544,7 +548,11 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
                                 "name": lead_info.get("name"),
                                 "email": lead_info.get("email"),
                                 "phone_number": lead_info.get("phone"),
-                                "additional_data": {"company": lead_info.get("company"), "interest_level": lead_info.get("interest_level")},
+                                "additional_data": {
+                                    "company": lead_info.get("company"),
+                                    "interest_level": lead_info.get("interest_level"),
+                                    "caller_id": conv.get("phone_number")  # The phone number the conversation came from
+                                },
                                 "extracted_at": conv["created_at"]
                             })
         except Exception as e:
