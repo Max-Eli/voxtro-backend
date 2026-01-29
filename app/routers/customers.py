@@ -1145,19 +1145,21 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
         for assistant_id in assistant_ids:
             try:
                 # Get the assistant's owner user_id
+                # Note: The database id IS the VAPI assistant ID (no separate vapi_assistant_id column)
                 assistant_result = supabase_admin.table("voice_assistants").select(
-                    "user_id, vapi_assistant_id"
+                    "user_id"
                 ).eq("id", assistant_id).single().execute()
 
                 if not assistant_result.data:
                     continue
 
                 owner_user_id = assistant_result.data["user_id"]
-                vapi_assistant_id = assistant_result.data.get("vapi_assistant_id")
+                # The assistant_id IS the VAPI assistant ID
+                vapi_assistant_id = assistant_id
 
-                # Get owner's VAPI connections
-                conn_result = supabase_admin.table("vapi_connections").select(
-                    "api_key, org_id"
+                # Get owner's VAPI connection (voice_connections table stores VAPI API keys)
+                conn_result = supabase_admin.table("voice_connections").select(
+                    "api_key"
                 ).eq("user_id", owner_user_id).eq("is_active", True).execute()
 
                 if not conn_result.data:
