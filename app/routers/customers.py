@@ -637,10 +637,11 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
             }
         }
 
-        # Initialize ID lists
+        # Initialize ID lists and name mappings
         chatbot_ids = []
         assistant_ids = []
         agent_ids = []
+        chatbot_names = {}
 
         # ========== CHATBOTS ==========
         chatbot_assignments = supabase_admin.table("customer_chatbot_assignments").select(
@@ -648,6 +649,7 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
         ).eq("customer_id", customer_id).execute()
         if chatbot_assignments.data:
             chatbot_ids = [a["chatbot_id"] for a in chatbot_assignments.data]
+            chatbot_names = {a["chatbot_id"]: a.get("chatbots", {}).get("name", "Unknown") for a in chatbot_assignments.data}
 
             # Get conversation counts
             conversations = supabase_admin.table("conversations").select(
@@ -813,7 +815,7 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
                                 "email": lead_info.get("email"),
                                 "phone_number": lead_info.get("phone"),
                                 "source_type": "chatbot",
-                                "source_name": chatbot_names.get(conv["chatbot_id"], "Unknown") if 'chatbot_names' in dir() else None,
+                                "source_name": chatbot_names.get(conv["chatbot_id"], "Unknown"),
                                 "extracted_at": conv["created_at"]
                             })
             total_leads += chatbot_leads_count
