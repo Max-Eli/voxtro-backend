@@ -1,6 +1,7 @@
 """Customer portal permissions management endpoints for business owners"""
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, List, Optional
+from datetime import datetime, timezone
 import logging
 import httpx
 
@@ -301,10 +302,11 @@ async def review_content(
 
         if action == "reject":
             # Simply update status to rejected
+            now = datetime.now(timezone.utc).isoformat()
             supabase_admin.table("customer_contributed_content").update({
                 "status": "rejected",
                 "reviewed_by": user_id,
-                "reviewed_at": "now()",
+                "reviewed_at": now,
                 "review_notes": notes
             }).eq("id", content_id).execute()
 
@@ -371,22 +373,24 @@ async def review_content(
                     raise HTTPException(status_code=500, detail="Failed to update assistant in VAPI")
 
             # Update content status to applied
+            now = datetime.now(timezone.utc).isoformat()
             supabase_admin.table("customer_contributed_content").update({
                 "status": "applied",
                 "reviewed_by": user_id,
-                "reviewed_at": "now()",
+                "reviewed_at": now,
                 "review_notes": notes,
-                "applied_at": "now()"
+                "applied_at": now
             }).eq("id", content_id).execute()
 
             return {"success": True, "action": "applied", "message": "FAQ added to voice assistant"}
 
         else:
             # Just mark as approved for non-voice or non-FAQ content
+            now = datetime.now(timezone.utc).isoformat()
             supabase_admin.table("customer_contributed_content").update({
                 "status": "approved",
                 "reviewed_by": user_id,
-                "reviewed_at": "now()",
+                "reviewed_at": now,
                 "review_notes": notes
             }).eq("id", content_id).execute()
 
