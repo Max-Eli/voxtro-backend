@@ -1474,8 +1474,16 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                             # Also re-sync if duration is missing (0 or NULL)
                             needs_duration = is_new_call or (existing.data and not existing.data[0].get("duration_seconds"))
 
-                            if existing.data and not needs_summary and not needs_duration:
-                                continue  # Already synced with summary and duration
+                            # Check if transcripts exist - critical for older calls that were synced before transcript support
+                            needs_transcripts = False
+                            if not is_new_call:
+                                existing_transcripts_check = supabase_admin.table("voice_assistant_transcripts").select(
+                                    "id"
+                                ).eq("call_id", call_id).limit(1).execute()
+                                needs_transcripts = not existing_transcripts_check.data
+
+                            if existing.data and not needs_summary and not needs_duration and not needs_transcripts:
+                                continue  # Already synced with summary, duration, and transcripts
 
                             # Get call details
                             call_detail_response = await client.get(
