@@ -1425,9 +1425,9 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                 for conn in conn_result.data:
                     api_key = conn["api_key"]
 
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        # Fetch calls from VAPI
-                        params = {"limit": 50}
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        # Fetch calls from VAPI - use high limit to get all historical calls
+                        params = {"limit": 1000}
                         if vapi_assistant_id:
                             params["assistantId"] = vapi_assistant_id
 
