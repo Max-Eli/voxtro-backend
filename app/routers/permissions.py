@@ -168,6 +168,8 @@ async def set_assignment_permissions(
             column = "whatsapp_assignment_id"
 
         # Upsert each permission
+        logger.info(f"Updating {len(permissions)} permissions for {assignment_type} assignment {assignment_id}")
+
         for perm in permissions:
             perm_type_id = perm.get("permission_type_id")
             is_enabled = perm.get("is_enabled", False)
@@ -182,11 +184,15 @@ async def set_assignment_permissions(
                 "granted_by": user_id
             }
 
+            logger.info(f"Upserting permission: {perm_type_id} = {is_enabled}")
+
             # Use upsert with on_conflict
-            supabase_admin.table("customer_portal_permissions").upsert(
+            result = supabase_admin.table("customer_portal_permissions").upsert(
                 perm_data,
                 on_conflict=f"{column},permission_type_id"
             ).execute()
+
+            logger.info(f"Upsert result: {result.data}")
 
         return {"success": True, "message": "Permissions updated"}
 
