@@ -1474,6 +1474,17 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                             call_detail = call_detail_response.json()
                             artifact = call_detail.get("artifact", {}) or {}
 
+                            # Debug: log available fields to understand VAPI response structure
+                            logger.debug(f"Call {call_id} detail keys: {list(call_detail.keys())}")
+                            logger.debug(f"Call {call_id} artifact keys: {list(artifact.keys())}")
+
+                            # Check for transcript in different locations (VAPI may store it differently)
+                            if not artifact.get("messages") and not call_detail.get("messages"):
+                                # Look for transcript field that might have the conversation
+                                transcript_field = artifact.get("transcript") or call_detail.get("transcript")
+                                if transcript_field:
+                                    logger.info(f"Call {call_id} has transcript field (length: {len(str(transcript_field))})")
+
                             # Extract duration - try multiple field names (VAPI uses different names)
                             duration = (
                                 call_detail.get("durationSeconds") or
@@ -1513,6 +1524,28 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                             # Insert transcript messages from VAPI if available
                             messages = artifact.get("messages", []) or call_detail.get("messages", [])
                             transcripts_inserted = False
+
+                            # Also check for transcript as a string field (VAPI sometimes returns this format)
+                            transcript_text_from_vapi = artifact.get("transcript") or call_detail.get("transcript")
+                            if transcript_text_from_vapi and isinstance(transcript_text_from_vapi, str) and not messages:
+                                logger.info(f"Call {call_id} has transcript string (length: {len(transcript_text_from_vapi)})")
+                                # Parse transcript string into messages format
+                                # Typical format: "AI: Hello...\nUser: Hi...\n"
+                                parsed_messages = []
+                                for line in transcript_text_from_vapi.split('\n'):
+                                    line = line.strip()
+                                    if ':' in line:
+                                        role_part, content = line.split(':', 1)
+                                        role_part = role_part.strip().lower()
+                                        content = content.strip()
+                                        if content:
+                                            if role_part in ["ai", "bot", "assistant"]:
+                                                parsed_messages.append({"role": "assistant", "content": content})
+                                            elif role_part in ["user", "human", "customer"]:
+                                                parsed_messages.append({"role": "user", "content": content})
+                                if parsed_messages:
+                                    logger.info(f"Parsed {len(parsed_messages)} messages from transcript string for call {call_id}")
+                                    messages = parsed_messages
 
                             if messages:
                                 existing_msgs = supabase_admin.table("voice_assistant_transcripts").select(
