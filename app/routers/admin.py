@@ -372,7 +372,7 @@ async def background_sync_all_voice():
                                                 "action_items": summary.get("action_items"),
                                                 "sentiment": summary.get("sentiment"),
                                                 "sentiment_notes": summary.get("sentiment_notes"),
-                                                "call_outcome": summary.get("call_outcome"),
+                                                "conversation_outcome": summary.get("conversation_outcome"),
                                                 "topics_discussed": summary.get("topics_discussed"),
                                                 "lead_info": summary.get("lead_info")
                                             }).eq("id", call_id).execute()
@@ -904,7 +904,7 @@ async def sync_all_voice_calls(
                                                 "action_items": summary.get("action_items"),
                                                 "sentiment": summary.get("sentiment"),
                                                 "sentiment_notes": summary.get("sentiment_notes"),
-                                                "call_outcome": summary.get("call_outcome"),
+                                                "conversation_outcome": summary.get("conversation_outcome"),
                                                 "topics_discussed": summary.get("topics_discussed"),
                                                 "lead_info": summary.get("lead_info")
                                             }).eq("id", call_id).execute()
