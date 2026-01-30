@@ -1621,3 +1621,347 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
     except Exception as e:
         logger.error(f"Sync customer voice calls error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# CUSTOMER PORTAL PERMISSIONS ENDPOINTS
+# ============================================================================
+
+@router.get("/portal/permissions")
+async def get_customer_permissions(auth_data: Dict = Depends(get_current_customer)):
+    """Get all permissions for the current customer across all assigned agents"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        permissions = []
+
+        # Get voice assistant permissions
+        voice_assignments = supabase_admin.table("customer_assistant_assignments").select(
+            "id, assistant_id, voice_assistants(id, name)"
+        ).eq("customer_id", customer_id).execute()
+
+        for assignment in (voice_assignments.data or []):
+            perms = supabase_admin.table("customer_portal_permissions").select(
+                "permission_type_id, is_enabled, portal_permission_types(id, name, category, description)"
+            ).eq("assistant_assignment_id", assignment["id"]).execute()
+
+            assistant = assignment.get("voice_assistants", {})
+            permissions.append({
+                "agent_type": "voice",
+                "agent_id": assistant.get("id"),
+                "agent_name": assistant.get("name", "Unknown"),
+                "assignment_id": assignment["id"],
+                "permissions": [
+                    {
+                        "id": p["permission_type_id"],
+                        "name": p.get("portal_permission_types", {}).get("name"),
+                        "category": p.get("portal_permission_types", {}).get("category"),
+                        "description": p.get("portal_permission_types", {}).get("description"),
+                        "is_enabled": p["is_enabled"]
+                    }
+                    for p in (perms.data or [])
+                ]
+            })
+
+        # Get chatbot permissions
+        chatbot_assignments = supabase_admin.table("customer_chatbot_assignments").select(
+            "id, chatbot_id, chatbots(id, name)"
+        ).eq("customer_id", customer_id).execute()
+
+        for assignment in (chatbot_assignments.data or []):
+            perms = supabase_admin.table("customer_portal_permissions").select(
+                "permission_type_id, is_enabled, portal_permission_types(id, name, category, description)"
+            ).eq("chatbot_assignment_id", assignment["id"]).execute()
+
+            chatbot = assignment.get("chatbots", {})
+            permissions.append({
+                "agent_type": "chatbot",
+                "agent_id": chatbot.get("id"),
+                "agent_name": chatbot.get("name", "Unknown"),
+                "assignment_id": assignment["id"],
+                "permissions": [
+                    {
+                        "id": p["permission_type_id"],
+                        "name": p.get("portal_permission_types", {}).get("name"),
+                        "category": p.get("portal_permission_types", {}).get("category"),
+                        "description": p.get("portal_permission_types", {}).get("description"),
+                        "is_enabled": p["is_enabled"]
+                    }
+                    for p in (perms.data or [])
+                ]
+            })
+
+        # Get WhatsApp permissions
+        whatsapp_assignments = supabase_admin.table("customer_whatsapp_agent_assignments").select(
+            "id, agent_id, whatsapp_agents(id, name)"
+        ).eq("customer_id", customer_id).execute()
+
+        for assignment in (whatsapp_assignments.data or []):
+            perms = supabase_admin.table("customer_portal_permissions").select(
+                "permission_type_id, is_enabled, portal_permission_types(id, name, category, description)"
+            ).eq("whatsapp_assignment_id", assignment["id"]).execute()
+
+            agent = assignment.get("whatsapp_agents", {})
+            permissions.append({
+                "agent_type": "whatsapp",
+                "agent_id": agent.get("id"),
+                "agent_name": agent.get("name", "Unknown"),
+                "assignment_id": assignment["id"],
+                "permissions": [
+                    {
+                        "id": p["permission_type_id"],
+                        "name": p.get("portal_permission_types", {}).get("name"),
+                        "category": p.get("portal_permission_types", {}).get("category"),
+                        "description": p.get("portal_permission_types", {}).get("description"),
+                        "is_enabled": p["is_enabled"]
+                    }
+                    for p in (perms.data or [])
+                ]
+            })
+
+        return {"permissions": permissions}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get customer permissions error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/portal/content")
+async def get_customer_content(auth_data: Dict = Depends(get_current_customer)):
+    """Get customer's submitted content (FAQs, etc.)"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Get all content submitted by this customer
+        content_result = supabase_admin.table("customer_contributed_content").select(
+            "id, assistant_id, chatbot_id, content_type, title, content, status, review_notes, created_at, updated_at"
+        ).eq("customer_id", customer_id).order("created_at", desc=True).execute()
+
+        return {"content": content_result.data or []}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get customer content error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/portal/content")
+async def submit_customer_content(
+    data: Dict,
+    auth_data: Dict = Depends(get_current_customer)
+):
+    """Submit new content (FAQ) for a voice assistant"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Validate required fields
+        content_type = data.get("content_type", "faq")
+        assistant_id = data.get("assistant_id")
+        chatbot_id = data.get("chatbot_id")
+        title = data.get("title")  # Question for FAQ
+        content = data.get("content")  # Answer for FAQ
+
+        if not content:
+            raise HTTPException(status_code=400, detail="Content is required")
+
+        if not assistant_id and not chatbot_id:
+            raise HTTPException(status_code=400, detail="Either assistant_id or chatbot_id is required")
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Check if customer has permission to contribute content
+        has_permission = False
+
+        if assistant_id:
+            # Check voice assistant permission
+            perm_check = supabase_admin.table("customer_portal_permissions").select(
+                "id"
+            ).eq("permission_type_id", "contribute_faq").eq("is_enabled", True).execute()
+
+            # Also verify the customer is assigned to this assistant
+            assignment = supabase_admin.table("customer_assistant_assignments").select(
+                "id"
+            ).eq("customer_id", customer_id).eq("assistant_id", assistant_id).execute()
+
+            if assignment.data:
+                assignment_id = assignment.data[0]["id"]
+                perm = supabase_admin.table("customer_portal_permissions").select(
+                    "id"
+                ).eq("assistant_assignment_id", assignment_id).eq(
+                    "permission_type_id", "contribute_faq"
+                ).eq("is_enabled", True).execute()
+                has_permission = bool(perm.data)
+
+        elif chatbot_id:
+            # Check chatbot permission
+            assignment = supabase_admin.table("customer_chatbot_assignments").select(
+                "id"
+            ).eq("customer_id", customer_id).eq("chatbot_id", chatbot_id).execute()
+
+            if assignment.data:
+                assignment_id = assignment.data[0]["id"]
+                perm = supabase_admin.table("customer_portal_permissions").select(
+                    "id"
+                ).eq("chatbot_assignment_id", assignment_id).eq(
+                    "permission_type_id", "contribute_faq"
+                ).eq("is_enabled", True).execute()
+                has_permission = bool(perm.data)
+
+        if not has_permission:
+            raise HTTPException(status_code=403, detail="You don't have permission to submit content for this agent")
+
+        # Create the content submission
+        content_data = {
+            "customer_id": customer_id,
+            "content_type": content_type,
+            "title": title,
+            "content": content,
+            "status": "pending"
+        }
+
+        if assistant_id:
+            content_data["assistant_id"] = assistant_id
+        else:
+            content_data["chatbot_id"] = chatbot_id
+
+        result = supabase_admin.table("customer_contributed_content").insert(content_data).execute()
+
+        return {"content": result.data[0] if result.data else None, "message": "Content submitted for review"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Submit customer content error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/portal/content/{content_id}")
+async def update_customer_content(
+    content_id: str,
+    data: Dict,
+    auth_data: Dict = Depends(get_current_customer)
+):
+    """Update pending content submission"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Verify content exists and belongs to customer
+        content_result = supabase_admin.table("customer_contributed_content").select(
+            "id, customer_id, status"
+        ).eq("id", content_id).single().execute()
+
+        if not content_result.data:
+            raise HTTPException(status_code=404, detail="Content not found")
+
+        if content_result.data["customer_id"] != customer_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        if content_result.data["status"] != "pending":
+            raise HTTPException(status_code=400, detail="Can only update pending content")
+
+        # Update allowed fields
+        update_data = {}
+        if "title" in data:
+            update_data["title"] = data["title"]
+        if "content" in data:
+            update_data["content"] = data["content"]
+
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No valid fields to update")
+
+        result = supabase_admin.table("customer_contributed_content").update(
+            update_data
+        ).eq("id", content_id).execute()
+
+        return {"content": result.data[0] if result.data else None}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Update customer content error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/portal/content/{content_id}")
+async def delete_customer_content(
+    content_id: str,
+    auth_data: Dict = Depends(get_current_customer)
+):
+    """Delete pending content submission"""
+    try:
+        user_id = auth_data["user_id"]
+
+        # Get customer profile
+        customer_result = supabase_admin.table("customers").select(
+            "id"
+        ).eq("user_id", user_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer profile not found")
+
+        customer_id = customer_result.data["id"]
+
+        # Verify content exists and belongs to customer
+        content_result = supabase_admin.table("customer_contributed_content").select(
+            "id, customer_id, status"
+        ).eq("id", content_id).single().execute()
+
+        if not content_result.data:
+            raise HTTPException(status_code=404, detail="Content not found")
+
+        if content_result.data["customer_id"] != customer_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        if content_result.data["status"] != "pending":
+            raise HTTPException(status_code=400, detail="Can only delete pending content")
+
+        supabase_admin.table("customer_contributed_content").delete().eq("id", content_id).execute()
+
+        return {"success": True, "message": "Content deleted"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete customer content error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -92,7 +92,7 @@ async def root():
     }
 
 # Import and include routers
-from app.routers import chat, widget, voice, whatsapp, webhooks, notifications, customers, forms, leads, openai_connection, admin
+from app.routers import chat, widget, voice, whatsapp, webhooks, notifications, customers, forms, leads, openai_connection, admin, permissions
 
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(widget.router, prefix="/api/widget", tags=["Widget"])
@@ -101,6 +101,7 @@ app.include_router(whatsapp.router, prefix="/api/whatsapp", tags=["WhatsApp Agen
 app.include_router(webhooks.router, prefix="/api/webhooks", tags=["Webhooks"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
 app.include_router(customers.router, prefix="/api/customers", tags=["Customers"])
+app.include_router(permissions.router, prefix="/api/permissions", tags=["Permissions"])
 app.include_router(forms.router, prefix="/api/forms", tags=["Forms"])
 app.include_router(leads.router, prefix="/api/leads", tags=["Leads"])
 app.include_router(openai_connection.router, prefix="/api/openai", tags=["OpenAI Connection"])
