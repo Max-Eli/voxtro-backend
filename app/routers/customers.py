@@ -440,13 +440,23 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
     """Get leads for customer's assigned agents (CUSTOMER PORTAL) - with retry logic"""
     try:
         user_id = auth_data["user_id"]
+        user_email = auth_data.get("email")
 
         # Get customer profile - with retry for connection errors
+        # Try by user_id first, then fall back to email
         customer_result = retry_supabase_query(
             lambda: supabase_admin.table("customers").select(
                 "id"
-            ).eq("user_id", user_id).single().execute()
+            ).eq("user_id", user_id).maybeSingle().execute()
         )
+
+        if not customer_result.data and user_email:
+            # Fallback: lookup by email
+            customer_result = retry_supabase_query(
+                lambda: supabase_admin.table("customers").select(
+                    "id"
+                ).eq("email", user_email).maybeSingle().execute()
+            )
 
         if not customer_result.data:
             raise HTTPException(status_code=404, detail="Customer profile not found")
@@ -590,16 +600,26 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
     """Get comprehensive analytics for customer's assigned agents (CUSTOMER PORTAL)"""
     try:
         user_id = auth_data["user_id"]
+        user_email = auth_data.get("email")
 
-        # Get customer profile
+        # Get customer profile - try by user_id first, then fall back to email
         customer_result = supabase_admin.table("customers").select(
             "id"
-        ).eq("user_id", user_id).single().execute()
+        ).eq("user_id", user_id).maybeSingle().execute()
+
+        if not customer_result.data and user_email:
+            # Fallback: lookup by email (for customers whose user_id might not be set)
+            logger.info(f"Customer not found by user_id {user_id}, trying email {user_email}")
+            customer_result = supabase_admin.table("customers").select(
+                "id"
+            ).eq("email", user_email).maybeSingle().execute()
 
         if not customer_result.data:
+            logger.warning(f"Customer not found for user_id={user_id}, email={user_email}")
             raise HTTPException(status_code=404, detail="Customer profile not found")
 
         customer_id = customer_result.data["id"]
+        logger.info(f"Analytics request for customer_id: {customer_id}, user_id: {user_id}, email: {user_email}")
 
         # Initialize response structure
         response = {
@@ -637,17 +657,22 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
             }
         }
 
-        # Initialize ID lists
+        # Initialize ID lists and name mappings
         chatbot_ids = []
         assistant_ids = []
         agent_ids = []
+        chatbot_names = {}
+        assistant_names = {}
+        agent_names = {}
 
         # ========== CHATBOTS ==========
         chatbot_assignments = supabase_admin.table("customer_chatbot_assignments").select(
             "chatbot_id, chatbots(id, name, description, theme_color)"
         ).eq("customer_id", customer_id).execute()
+        logger.info(f"Chatbot assignments for {customer_id}: {len(chatbot_assignments.data) if chatbot_assignments.data else 0}")
         if chatbot_assignments.data:
             chatbot_ids = [a["chatbot_id"] for a in chatbot_assignments.data]
+            chatbot_names = {a["chatbot_id"]: a.get("chatbots", {}).get("name", "Unknown") for a in chatbot_assignments.data}
 
             # Get conversation counts
             conversations = supabase_admin.table("conversations").select(
@@ -701,8 +726,10 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
                 "assistant_id, voice_assistants(id, name, first_message, voice_provider, phone_number)"
             ).eq("customer_id", customer_id).execute()
 
+            logger.info(f"Voice assignments for {customer_id}: {len(voice_assignments.data) if voice_assignments.data else 0}")
             if voice_assignments.data:
                 assistant_ids = [a["assistant_id"] for a in voice_assignments.data]
+                assistant_names = {a["assistant_id"]: a.get("voice_assistants", {}).get("name", "Unknown") for a in voice_assignments.data}
 
                 # Get call stats
                 calls = supabase_admin.table("voice_assistant_calls").select(
@@ -742,7 +769,7 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
                     round((successful_calls / total_calls) * 100) if total_calls > 0 else 0
                 )
         except Exception as e:
-            logger.debug(f"Voice assistant data not available: {e}")
+            logger.warning(f"Voice assistant data error: {e}")
 
         # ========== WHATSAPP AGENTS ==========
         try:
@@ -750,8 +777,10 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
                 "agent_id, whatsapp_agents(id, name, phone_number, status)"
             ).eq("customer_id", customer_id).execute()
 
+            logger.info(f"WhatsApp assignments for {customer_id}: {len(wa_assignments.data) if wa_assignments.data else 0}")
             if wa_assignments.data:
                 agent_ids = [a["agent_id"] for a in wa_assignments.data]
+                agent_names = {a["agent_id"]: a.get("whatsapp_agents", {}).get("name", "Unknown") for a in wa_assignments.data}
 
                 # Get conversation counts
                 wa_convs = supabase_admin.table("whatsapp_conversations").select(
@@ -785,7 +814,7 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
                 response["whatsapp_agents"]["total_conversations"] = len(wa_convs.data or [])
                 response["whatsapp_agents"]["total_messages"] = total_wa_msgs
         except Exception as e:
-            logger.debug(f"WhatsApp agent data not available: {e}")
+            logger.warning(f"WhatsApp agent data error: {e}")
 
         # ========== LEADS ==========
         # Leads are stored in the lead_info JSON column of each conversation type
@@ -793,7 +822,7 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
         chatbot_leads_count = 0
         voice_leads_count = 0
         wa_leads_count = 0
-        recent_leads_list = []
+        all_recent_leads = []
 
         # Get chatbot leads from conversations.lead_info
         if chatbot_ids:
@@ -806,46 +835,66 @@ async def get_customer_analytics(auth_data: Dict = Depends(get_current_customer)
                     lead_info = conv.get("lead_info") or {}
                     if lead_info.get("name") or lead_info.get("email") or lead_info.get("phone"):
                         chatbot_leads_count += 1
-                        if len(recent_leads_list) < 5:
-                            recent_leads_list.append({
-                                "id": conv["id"],
-                                "name": lead_info.get("name"),
-                                "email": lead_info.get("email"),
-                                "phone_number": lead_info.get("phone"),
-                                "source_type": "chatbot",
-                                "source_name": chatbot_names.get(conv["chatbot_id"], "Unknown") if 'chatbot_names' in dir() else None,
-                                "extracted_at": conv["created_at"]
-                            })
+                        all_recent_leads.append({
+                            "id": conv["id"],
+                            "name": lead_info.get("name"),
+                            "email": lead_info.get("email"),
+                            "phone_number": lead_info.get("phone"),
+                            "source_type": "chatbot",
+                            "source_name": chatbot_names.get(conv["chatbot_id"], "Unknown"),
+                            "extracted_at": conv["created_at"]
+                        })
             total_leads += chatbot_leads_count
 
         # Get voice leads from voice_assistant_calls.lead_info
         if assistant_ids:
             voice_leads_result = supabase_admin.table("voice_assistant_calls").select(
                 "id, assistant_id, lead_info, started_at"
-            ).in_("assistant_id", assistant_ids).not_.is_("lead_info", "null").execute()
+            ).in_("assistant_id", assistant_ids).not_.is_("lead_info", "null").order("started_at", desc=True).execute()
 
             if voice_leads_result.data:
                 for call in voice_leads_result.data:
                     lead_info = call.get("lead_info") or {}
                     if lead_info.get("name") or lead_info.get("email") or lead_info.get("phone"):
                         voice_leads_count += 1
+                        all_recent_leads.append({
+                            "id": call["id"],
+                            "name": lead_info.get("name"),
+                            "email": lead_info.get("email"),
+                            "phone_number": lead_info.get("phone"),
+                            "source_type": "voice",
+                            "source_name": assistant_names.get(call["assistant_id"], "Unknown"),
+                            "extracted_at": call["started_at"]
+                        })
             total_leads += voice_leads_count
 
         # Get whatsapp leads from whatsapp_conversations.lead_info
         if agent_ids:
             wa_leads_result = supabase_admin.table("whatsapp_conversations").select(
                 "id, agent_id, lead_info, created_at"
-            ).in_("agent_id", agent_ids).not_.is_("lead_info", "null").execute()
+            ).in_("agent_id", agent_ids).not_.is_("lead_info", "null").order("created_at", desc=True).execute()
 
             if wa_leads_result.data:
                 for conv in wa_leads_result.data:
                     lead_info = conv.get("lead_info") or {}
                     if lead_info.get("name") or lead_info.get("email") or lead_info.get("phone"):
                         wa_leads_count += 1
+                        all_recent_leads.append({
+                            "id": conv["id"],
+                            "name": lead_info.get("name"),
+                            "email": lead_info.get("email"),
+                            "phone_number": lead_info.get("phone"),
+                            "source_type": "whatsapp",
+                            "source_name": agent_names.get(conv["agent_id"], "Unknown"),
+                            "extracted_at": conv["created_at"]
+                        })
             total_leads += wa_leads_count
 
-        response["leads"]["recent"] = recent_leads_list
+        # Sort all leads by date and take most recent 5
+        all_recent_leads.sort(key=lambda x: x["extracted_at"] or "", reverse=True)
+        response["leads"]["recent"] = all_recent_leads[:5]
         response["leads"]["total_count"] = total_leads
+        logger.info(f"Analytics summary - chatbots: {len(chatbot_ids)}, voice: {len(assistant_ids)}, whatsapp: {len(agent_ids)}, leads: {total_leads}")
 
         # Calculate conversion rates
         total_chatbot_interactions = response["chatbots"]["total_conversations"]
