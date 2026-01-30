@@ -215,12 +215,22 @@ async def get_pending_content(
 
         pending_content = []
 
+        # Get direct teammates for team access
+        teammates_result = supabase_admin.rpc(
+            "get_direct_teammates",
+            {"user_uuid": user_id}
+        ).execute()
+        teammate_ids = teammates_result.data or []
+
+        # All user IDs to check (self + teammates)
+        all_user_ids = [user_id] + teammate_ids
+
         # Get voice assistant content
         if agent_type in [None, "voice"]:
-            # Get user's voice assistants
+            # Get user's AND teammates' voice assistants
             assistants = supabase_admin.table("voice_assistants").select(
                 "id"
-            ).eq("user_id", user_id).execute()
+            ).in_("user_id", all_user_ids).execute()
 
             assistant_ids = [a["id"] for a in (assistants.data or [])]
 
@@ -238,9 +248,10 @@ async def get_pending_content(
 
         # Get chatbot content
         if agent_type in [None, "chatbot"]:
+            # Get user's AND teammates' chatbots
             chatbots = supabase_admin.table("chatbots").select(
                 "id"
-            ).eq("user_id", user_id).execute()
+            ).in_("user_id", all_user_ids).execute()
 
             chatbot_ids = [c["id"] for c in (chatbots.data or [])]
 
