@@ -289,6 +289,14 @@ async def review_content(
         if action not in ["approve", "reject"]:
             raise HTTPException(status_code=400, detail="Action must be 'approve' or 'reject'")
 
+        # Get direct teammates for team access
+        teammates_result = supabase_admin.rpc(
+            "get_direct_teammates",
+            {"user_uuid": user_id}
+        ).execute()
+        teammate_ids = teammates_result.data or []
+        all_user_ids = [user_id] + teammate_ids
+
         # Get the content
         content = supabase_admin.table("customer_contributed_content").select(
             "*, voice_assistants:assistant_id(id, name, user_id)"
@@ -297,15 +305,20 @@ async def review_content(
         if not content.data:
             raise HTTPException(status_code=404, detail="Content not found")
 
-        # Verify user owns the agent
+        # Verify user owns the agent OR is a teammate of the owner
+        agent_owner_id = None
         if content.data.get("assistant_id"):
-            if content.data.get("voice_assistants", {}).get("user_id") != user_id:
+            agent_owner_id = content.data.get("voice_assistants", {}).get("user_id")
+            if agent_owner_id not in all_user_ids:
                 raise HTTPException(status_code=403, detail="Access denied")
         elif content.data.get("chatbot_id"):
             chatbot = supabase_admin.table("chatbots").select(
                 "user_id"
             ).eq("id", content.data["chatbot_id"]).single().execute()
-            if not chatbot.data or chatbot.data["user_id"] != user_id:
+            if not chatbot.data:
+                raise HTTPException(status_code=403, detail="Access denied")
+            agent_owner_id = chatbot.data["user_id"]
+            if agent_owner_id not in all_user_ids:
                 raise HTTPException(status_code=403, detail="Access denied")
 
         if content.data["status"] != "pending":
@@ -327,13 +340,13 @@ async def review_content(
         if content.data.get("assistant_id") and content.data["content_type"] == "faq":
             assistant_id = content.data["assistant_id"]
 
-            # Get user's VAPI connection
+            # Get the agent owner's VAPI connection (not current user's)
             connection = supabase_admin.table("voice_connections").select(
                 "api_key"
-            ).eq("user_id", user_id).eq("is_active", True).limit(1).execute()
+            ).eq("user_id", agent_owner_id).eq("is_active", True).limit(1).execute()
 
             if not connection.data:
-                raise HTTPException(status_code=400, detail="No active VAPI connection found")
+                raise HTTPException(status_code=400, detail="No active VAPI connection found for agent owner")
 
             api_key = connection.data[0]["api_key"]
 
