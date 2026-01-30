@@ -340,13 +340,23 @@ async def review_content(
         if content.data.get("assistant_id") and content.data["content_type"] == "faq":
             assistant_id = content.data["assistant_id"]
 
-            # Get the agent owner's VAPI connection (not current user's)
+            # Get the voice assistant's org_id to find the correct VAPI connection
+            assistant_info = supabase_admin.table("voice_assistants").select(
+                "org_id"
+            ).eq("id", assistant_id).single().execute()
+
+            if not assistant_info.data or not assistant_info.data.get("org_id"):
+                raise HTTPException(status_code=400, detail="Voice assistant has no organization ID")
+
+            assistant_org_id = assistant_info.data["org_id"]
+
+            # Get the VAPI connection that matches this org_id
             connection = supabase_admin.table("voice_connections").select(
                 "api_key"
-            ).eq("user_id", agent_owner_id).eq("is_active", True).limit(1).execute()
+            ).eq("org_id", assistant_org_id).eq("is_active", True).limit(1).execute()
 
             if not connection.data:
-                raise HTTPException(status_code=400, detail="No active VAPI connection found for agent owner")
+                raise HTTPException(status_code=400, detail="No active VAPI connection found for this organization")
 
             api_key = connection.data[0]["api_key"]
 
