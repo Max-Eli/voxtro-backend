@@ -8,6 +8,7 @@ from app.models.customer import CustomerCreate, CustomerCreateResponse, SupportT
 from app.middleware.auth import get_current_user, get_current_customer
 from app.database import supabase_admin
 from app.config import get_settings
+from app.utils.retry import retry_supabase_query
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -436,14 +437,16 @@ async def create_customer_ticket(
 
 @router.get("/portal/leads")
 async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
-    """Get leads for customer's assigned agents (CUSTOMER PORTAL)"""
+    """Get leads for customer's assigned agents (CUSTOMER PORTAL) - with retry logic"""
     try:
         user_id = auth_data["user_id"]
 
-        # Get customer profile
-        customer_result = supabase_admin.table("customers").select(
-            "id"
-        ).eq("user_id", user_id).single().execute()
+        # Get customer profile - with retry for connection errors
+        customer_result = retry_supabase_query(
+            lambda: supabase_admin.table("customers").select(
+                "id"
+            ).eq("user_id", user_id).single().execute()
+        )
 
         if not customer_result.data:
             raise HTTPException(status_code=404, detail="Customer profile not found")
@@ -451,19 +454,23 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
         customer_id = customer_result.data["id"]
         all_leads = []
 
-        # Get chatbot assignments and their leads
-        chatbot_assignments = supabase_admin.table("customer_chatbot_assignments").select(
-            "chatbot_id, chatbots(name)"
-        ).eq("customer_id", customer_id).execute()
+        # Get chatbot assignments and their leads - with retry
+        chatbot_assignments = retry_supabase_query(
+            lambda: supabase_admin.table("customer_chatbot_assignments").select(
+                "chatbot_id, chatbots(name)"
+            ).eq("customer_id", customer_id).execute()
+        )
 
         if chatbot_assignments.data:
             chatbot_ids = [a["chatbot_id"] for a in chatbot_assignments.data]
             chatbot_names = {a["chatbot_id"]: a.get("chatbots", {}).get("name", "Unknown") for a in chatbot_assignments.data}
 
-            # Get chatbot leads from conversations.lead_info (populated by AI summary)
-            chatbot_convos = supabase_admin.table("conversations").select(
-                "id, chatbot_id, lead_info, created_at"
-            ).in_("chatbot_id", chatbot_ids).not_.is_("lead_info", "null").order("created_at", desc=True).execute()
+            # Get chatbot leads from conversations.lead_info - with retry
+            chatbot_convos = retry_supabase_query(
+                lambda: supabase_admin.table("conversations").select(
+                    "id, chatbot_id, lead_info, created_at"
+                ).in_("chatbot_id", chatbot_ids).not_.is_("lead_info", "null").order("created_at", desc=True).execute()
+            )
 
             if chatbot_convos.data:
                 for conv in chatbot_convos.data:
@@ -484,18 +491,22 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
 
         # Get voice assistant leads from voice_assistant_calls.lead_info
         try:
-            voice_assignments = supabase_admin.table("customer_assistant_assignments").select(
-                "assistant_id, voice_assistants(name)"
-            ).eq("customer_id", customer_id).execute()
+            voice_assignments = retry_supabase_query(
+                lambda: supabase_admin.table("customer_assistant_assignments").select(
+                    "assistant_id, voice_assistants(name)"
+                ).eq("customer_id", customer_id).execute()
+            )
 
             if voice_assignments.data:
                 assistant_ids = [a["assistant_id"] for a in voice_assignments.data]
                 assistant_names = {a["assistant_id"]: a.get("voice_assistants", {}).get("name", "Unknown") for a in voice_assignments.data}
 
-                # Voice leads are stored in voice_assistant_calls.lead_info JSON column
-                voice_calls = supabase_admin.table("voice_assistant_calls").select(
-                    "id, assistant_id, lead_info, started_at, phone_number"
-                ).in_("assistant_id", assistant_ids).not_.is_("lead_info", "null").order("started_at", desc=True).execute()
+                # Voice leads - with retry
+                voice_calls = retry_supabase_query(
+                    lambda: supabase_admin.table("voice_assistant_calls").select(
+                        "id, assistant_id, lead_info, started_at, phone_number"
+                    ).in_("assistant_id", assistant_ids).not_.is_("lead_info", "null").order("started_at", desc=True).execute()
+                )
 
                 if voice_calls.data:
                     for call in voice_calls.data:
@@ -518,22 +529,26 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
                                 "extracted_at": call["started_at"]
                             })
         except Exception as e:
-            logger.debug(f"Voice assistant leads not available: {e}")
+            logger.warning(f"Voice assistant leads query failed (non-critical): {e}")
 
         # Get whatsapp agent leads from whatsapp_conversations.lead_info
         try:
-            whatsapp_assignments = supabase_admin.table("customer_whatsapp_agent_assignments").select(
-                "agent_id, whatsapp_agents(name)"
-            ).eq("customer_id", customer_id).execute()
+            whatsapp_assignments = retry_supabase_query(
+                lambda: supabase_admin.table("customer_whatsapp_agent_assignments").select(
+                    "agent_id, whatsapp_agents(name)"
+                ).eq("customer_id", customer_id).execute()
+            )
 
             if whatsapp_assignments.data:
                 agent_ids = [a["agent_id"] for a in whatsapp_assignments.data]
                 agent_names = {a["agent_id"]: a.get("whatsapp_agents", {}).get("name", "Unknown") for a in whatsapp_assignments.data}
 
-                # WhatsApp leads are stored in whatsapp_conversations.lead_info JSON column
-                wa_convos = supabase_admin.table("whatsapp_conversations").select(
-                    "id, agent_id, lead_info, created_at, phone_number"
-                ).in_("agent_id", agent_ids).not_.is_("lead_info", "null").order("created_at", desc=True).execute()
+                # WhatsApp leads - with retry
+                wa_convos = retry_supabase_query(
+                    lambda: supabase_admin.table("whatsapp_conversations").select(
+                        "id, agent_id, lead_info, created_at, phone_number"
+                    ).in_("agent_id", agent_ids).not_.is_("lead_info", "null").order("created_at", desc=True).execute()
+                )
 
                 if wa_convos.data:
                     for conv in wa_convos.data:
@@ -556,7 +571,7 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
                                 "extracted_at": conv["created_at"]
                             })
         except Exception as e:
-            logger.debug(f"WhatsApp agent leads not available: {e}")
+            logger.warning(f"WhatsApp agent leads query failed (non-critical): {e}")
 
         # Sort all leads by date descending
         all_leads.sort(key=lambda x: x["extracted_at"], reverse=True)
