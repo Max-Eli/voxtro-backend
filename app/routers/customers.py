@@ -1510,8 +1510,10 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                 call_data, on_conflict="id"
                             ).execute()
 
-                            # Insert transcript messages
+                            # Insert transcript messages from VAPI if available
                             messages = artifact.get("messages", []) or call_detail.get("messages", [])
+                            transcripts_inserted = False
+
                             if messages:
                                 existing_msgs = supabase_admin.table("voice_assistant_transcripts").select(
                                     "id"
@@ -1538,6 +1540,7 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                         supabase_admin.table("voice_assistant_transcripts").insert(
                                             transcripts_to_insert
                                         ).execute()
+                                        transcripts_inserted = True
 
                                         # Generate AI summary for the call (safe - won't break sync if fails)
                                         try:
@@ -1562,34 +1565,38 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                         except Exception as ai_error:
                                             logger.warning(f"AI summary generation failed for call {call_id}: {ai_error}")
                                             # Don't fail the sync - just skip AI summary
-                                elif needs_summary:
-                                    # Existing transcripts but no summary - generate AI summary now
-                                    try:
-                                        existing_transcripts = supabase_admin.table("voice_assistant_transcripts").select(
-                                            "role, content"
-                                        ).eq("call_id", call_id).order("timestamp").execute()
 
-                                        if existing_transcripts.data:
-                                            transcript_text = "\n".join([
-                                                f"{t['role']}: {t['content']}" for t in existing_transcripts.data
-                                            ])
-                                            if transcript_text.strip():
-                                                from app.routers.webhooks import generate_call_summary
-                                                summary = await generate_call_summary(call_id, transcript_text, owner_user_id)
-                                                if summary:
-                                                    supabase_admin.table("voice_assistant_calls").update({
-                                                        "summary": summary.get("summary"),
-                                                        "key_points": summary.get("key_points"),
-                                                        "action_items": summary.get("action_items"),
-                                                        "sentiment": summary.get("sentiment"),
-                                                        "sentiment_notes": summary.get("sentiment_notes"),
-                                                        "call_outcome": summary.get("call_outcome"),
-                                                        "topics_discussed": summary.get("topics_discussed"),
-                                                        "lead_info": summary.get("lead_info")
-                                                    }).eq("id", call_id).execute()
-                                                    logger.info(f"Generated AI summary for existing call {call_id}")
-                                    except Exception as ai_error:
-                                        logger.warning(f"AI summary generation failed for existing call {call_id}: {ai_error}")
+                            # Generate AI summary from existing transcripts if needed
+                            # This runs when: 1) VAPI didn't return messages, OR 2) transcripts exist but no summary
+                            if needs_summary and not transcripts_inserted:
+                                try:
+                                    existing_transcripts = supabase_admin.table("voice_assistant_transcripts").select(
+                                        "role, content"
+                                    ).eq("call_id", call_id).order("timestamp").execute()
+
+                                    if existing_transcripts.data:
+                                        transcript_text = "\n".join([
+                                            f"{t['role']}: {t['content']}" for t in existing_transcripts.data
+                                        ])
+                                        if transcript_text.strip():
+                                            from app.routers.webhooks import generate_call_summary
+                                            summary = await generate_call_summary(call_id, transcript_text, owner_user_id)
+                                            if summary:
+                                                supabase_admin.table("voice_assistant_calls").update({
+                                                    "summary": summary.get("summary"),
+                                                    "key_points": summary.get("key_points"),
+                                                    "action_items": summary.get("action_items"),
+                                                    "sentiment": summary.get("sentiment"),
+                                                    "sentiment_notes": summary.get("sentiment_notes"),
+                                                    "call_outcome": summary.get("call_outcome"),
+                                                    "topics_discussed": summary.get("topics_discussed"),
+                                                    "lead_info": summary.get("lead_info")
+                                                }).eq("id", call_id).execute()
+                                                logger.info(f"Generated AI summary for existing call {call_id}")
+                                    else:
+                                        logger.debug(f"No transcripts found in DB for call {call_id} - cannot generate summary")
+                                except Exception as ai_error:
+                                    logger.warning(f"AI summary generation failed for existing call {call_id}: {ai_error}")
 
                             # Insert recording if available
                             recording_url = artifact.get("recordingUrl") or call_detail.get("recordingUrl")
