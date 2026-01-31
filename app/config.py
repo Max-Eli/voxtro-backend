@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     frontend_url: str = "https://dev.voxtro.io"
     support_email: str = "support@voxtro.io"
 
+    # Vercel API (for custom domains feature)
+    vercel_token: str = ""
+    vercel_project_id: str = ""
+
     class Config:
         env_file = ".env"
         case_sensitive = False

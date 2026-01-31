@@ -92,7 +92,7 @@ async def root():
     }
 
 # Import and include routers
-from app.routers import chat, widget, voice, whatsapp, webhooks, notifications, customers, forms, leads, openai_connection, admin, permissions
+from app.routers import chat, widget, voice, whatsapp, webhooks, notifications, customers, forms, leads, openai_connection, admin, permissions, domains
 
 app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
 app.include_router(widget.router, prefix="/api/widget", tags=["Widget"])
@@ -106,6 +106,7 @@ app.include_router(forms.router, prefix="/api/forms", tags=["Forms"])
 app.include_router(leads.router, prefix="/api/leads", tags=["Leads"])
 app.include_router(openai_connection.router, prefix="/api/openai", tags=["OpenAI Connection"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
+app.include_router(domains.router, prefix="/api/domains", tags=["Custom Domains"])
 
 if __name__ == "__main__":
     import uvicorn
