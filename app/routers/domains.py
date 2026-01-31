@@ -170,19 +170,19 @@ async def get_my_domain(auth_data: Dict = Depends(get_current_user)):
         result = supabase_admin.table("user_custom_domains") \
             .select("*") \
             .eq("user_id", user_id) \
-            .maybeSingle() \
             .execute()
 
-        if not result.data:
+        if not result.data or len(result.data) == 0:
             return None
 
+        domain_data = result.data[0]
         return DomainResponse(
-            id=result.data["id"],
-            domain=result.data["domain"],
-            verification_status=result.data["verification_status"],
-            vercel_domain_id=result.data.get("vercel_domain_id"),
-            verified_at=result.data.get("verified_at"),
-            created_at=result.data["created_at"]
+            id=domain_data["id"],
+            domain=domain_data["domain"],
+            verification_status=domain_data["verification_status"],
+            vercel_domain_id=domain_data.get("vercel_domain_id"),
+            verified_at=domain_data.get("verified_at"),
+            created_at=domain_data["created_at"]
         )
 
     except Exception as e:
@@ -200,10 +200,9 @@ async def add_custom_domain(data: DomainCreate, auth_data: Dict = Depends(get_cu
         existing = supabase_admin.table("user_custom_domains") \
             .select("id") \
             .eq("user_id", user_id) \
-            .maybeSingle() \
             .execute()
 
-        if existing.data:
+        if existing.data and len(existing.data) > 0:
             raise HTTPException(
                 status_code=400,
                 detail="You already have a custom domain. Delete it first to add a new one."
@@ -213,10 +212,9 @@ async def add_custom_domain(data: DomainCreate, auth_data: Dict = Depends(get_cu
         domain_check = supabase_admin.table("user_custom_domains") \
             .select("id") \
             .eq("domain", data.domain) \
-            .maybeSingle() \
             .execute()
 
-        if domain_check.data:
+        if domain_check.data and len(domain_check.data) > 0:
             raise HTTPException(status_code=400, detail="This domain is already in use")
 
         # Add domain to Vercel
@@ -259,13 +257,12 @@ async def verify_domain(auth_data: Dict = Depends(get_current_user)):
         result = supabase_admin.table("user_custom_domains") \
             .select("*") \
             .eq("user_id", user_id) \
-            .single() \
             .execute()
 
-        if not result.data:
+        if not result.data or len(result.data) == 0:
             raise HTTPException(status_code=404, detail="No custom domain configured")
 
-        domain = result.data["domain"]
+        domain = result.data[0]["domain"]
 
         # Check with Vercel
         vercel_status = await check_domain_in_vercel(domain)
@@ -312,13 +309,12 @@ async def remove_custom_domain(auth_data: Dict = Depends(get_current_user)):
         result = supabase_admin.table("user_custom_domains") \
             .select("*") \
             .eq("user_id", user_id) \
-            .single() \
             .execute()
 
-        if not result.data:
+        if not result.data or len(result.data) == 0:
             raise HTTPException(status_code=404, detail="No custom domain configured")
 
-        domain = result.data["domain"]
+        domain = result.data[0]["domain"]
 
         # Remove from Vercel
         await remove_domain_from_vercel(domain)
