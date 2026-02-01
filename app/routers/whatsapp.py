@@ -150,21 +150,35 @@ async def get_whatsapp_agent(agent_id: str, auth_data: Dict = Depends(get_curren
     try:
         user_id = auth_data["user_id"]
 
-        # Verify agent belongs to user
+        # Get the agent first (without user_id filter to allow team access)
         agent = supabase_admin.table("whatsapp_agents").select("*").eq(
             "id", agent_id
-        ).eq("user_id", user_id).single().execute()
+        ).single().execute()
 
         if not agent.data:
             raise HTTPException(status_code=404, detail="Agent not found")
 
-        # Get ElevenLabs connection
+        agent_owner_id = agent.data["user_id"]
+
+        # Verify user has access: either owner or teammate
+        if agent_owner_id != user_id:
+            # Check if user is a teammate of the agent owner
+            teammate_check = supabase_admin.rpc(
+                "get_direct_teammates",
+                {"user_uuid": user_id}
+            ).execute()
+
+            teammate_ids = [t for t in (teammate_check.data or [])]
+            if agent_owner_id not in teammate_ids:
+                raise HTTPException(status_code=403, detail="Access denied - not owner or teammate")
+
+        # Get the agent OWNER's ElevenLabs connection (not the current user's)
         conn_result = supabase_admin.table("elevenlabs_connections").select("*").eq(
-            "user_id", user_id
+            "user_id", agent_owner_id
         ).eq("is_active", True).single().execute()
 
         if not conn_result.data:
-            raise HTTPException(status_code=404, detail="ElevenLabs connection not found")
+            raise HTTPException(status_code=404, detail="ElevenLabs connection not found for agent owner")
 
         api_key = conn_result.data["api_key"]
 
