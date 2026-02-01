@@ -63,7 +63,7 @@ cp .env.example .env
 
 Edit `.env` with your credentials:
 ```env
-SUPABASE_URL=https://nzqzmvsrsfynatxojuil.supabase.co
+SUPABASE_URL=https://your-project-id.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 SUPABASE_ANON_KEY=your-anon-key
 SUPABASE_JWT_SECRET=your-jwt-secret
