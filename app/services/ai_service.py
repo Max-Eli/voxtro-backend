@@ -194,6 +194,7 @@ async def call_openai(
 
     last_error = None
     rate_limited_models = set()
+    is_using_fallback = False
 
     for current_model in models_to_try:
         if current_model in rate_limited_models:
@@ -201,10 +202,27 @@ async def call_openai(
 
         for attempt in range(max_retries):
             try:
+                # When using fallback model, add language continuity instruction
+                request_messages = messages.copy()
+                if is_using_fallback and len(messages) > 1:
+                    # Detect conversation language from recent messages
+                    recent_content = " ".join([m.get("content", "")[:200] for m in messages[-5:] if m.get("role") != "system"])
+
+                    # Add instruction to continue in same language
+                    lang_instruction = {
+                        "role": "system",
+                        "content": "IMPORTANT: Continue the conversation in the SAME LANGUAGE the user has been using. Match their language exactly. If they speak Spanish, respond in Spanish. If they speak French, respond in French. Do not switch languages."
+                    }
+                    # Insert after the main system prompt
+                    if request_messages and request_messages[0].get("role") == "system":
+                        request_messages.insert(1, lang_instruction)
+                    else:
+                        request_messages.insert(0, lang_instruction)
+
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     payload = {
                         "model": current_model,
-                        "messages": messages,
+                        "messages": request_messages,
                         "temperature": temperature,
                         "max_tokens": max_tokens
                     }
@@ -247,6 +265,7 @@ async def call_openai(
                         if is_daily_limit:
                             logger.warning(f"Daily rate limit (RPD) reached for {current_model}, trying fallback...")
                             rate_limited_models.add(current_model)
+                            is_using_fallback = True
                             break  # Break inner loop to try next model
 
                         # For per-minute limits, parse retry-after and wait
@@ -266,6 +285,7 @@ async def call_openai(
 
                         # All retries exhausted for this model, try fallback
                         rate_limited_models.add(current_model)
+                        is_using_fallback = True
                         break
 
                     # Other errors - don't retry, don't fallback
@@ -287,6 +307,7 @@ async def call_openai(
                 if "rate" not in str(e).lower():
                     raise
                 rate_limited_models.add(current_model)
+                is_using_fallback = True
                 break
 
     # All models exhausted
