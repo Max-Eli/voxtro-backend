@@ -149,16 +149,27 @@ async def save_to_cache(chatbot_id: str, question: str, response: str, model: st
         logger.error(f"Cache save error: {e}")
 
 
+# Fallback models when primary model hits rate limits (per-model limits)
+MODEL_FALLBACKS = {
+    "gpt-4o-mini": ["gpt-3.5-turbo", "gpt-4o"],
+    "gpt-4o": ["gpt-4o-mini", "gpt-4"],
+    "gpt-4": ["gpt-4o", "gpt-4o-mini"],
+    "gpt-3.5-turbo": ["gpt-4o-mini"],
+}
+
+
 async def call_openai(
     messages: List[Dict[str, str]],
     api_key: str,
     model: str = "gpt-4o-mini",
     temperature: float = 0.7,
     max_tokens: int = 1000,
-    tools: Optional[List[Dict]] = None
+    tools: Optional[List[Dict]] = None,
+    max_retries: int = 3,
+    use_fallback: bool = True
 ) -> Dict[str, Any]:
     """
-    Call OpenAI API with user-provided API key
+    Call OpenAI API with user-provided API key, retry logic, and model fallback
 
     Args:
         messages: List of message objects with role and content
@@ -167,51 +178,125 @@ async def call_openai(
         temperature: Sampling temperature
         max_tokens: Max tokens to generate
         tools: Optional function calling tools
+        max_retries: Max retry attempts for rate limits
+        use_fallback: Whether to try fallback models on rate limit
 
     Returns:
         Dict with response and token usage
     """
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens
-            }
+    import asyncio
+    import re
 
-            if tools:
-                payload["tools"] = tools
-                payload["tool_choice"] = "auto"
+    # Build list of models to try: primary + fallbacks
+    models_to_try = [model]
+    if use_fallback:
+        models_to_try.extend(MODEL_FALLBACKS.get(model, []))
 
-            response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
-                json=payload
-            )
+    last_error = None
+    rate_limited_models = set()
 
-            if response.status_code != 200:
-                error_text = response.text
-                logger.error(f"OpenAI API error: {error_text}")
-                raise Exception(f"OpenAI API error: {response.status_code}")
+    for current_model in models_to_try:
+        if current_model in rate_limited_models:
+            continue
 
-            data = response.json()
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    payload = {
+                        "model": current_model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "max_tokens": max_tokens
+                    }
 
-            # Get the message content (may be null if tool calls are present)
-            message_content = data["choices"][0]["message"].get("content")
+                    if tools:
+                        payload["tools"] = tools
+                        payload["tool_choice"] = "auto"
 
-            return {
-                "message": message_content,
-                "tool_calls": data["choices"][0]["message"].get("tool_calls"),
-                "usage": data.get("usage", {}),
-                "model": data.get("model")
-            }
-    except Exception as e:
-        logger.error(f"OpenAI call failed: {e}")
-        raise
+                    response = await client.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json=payload
+                    )
+
+                    if response.status_code == 200:
+                        data = response.json()
+                        message_content = data["choices"][0]["message"].get("content")
+                        actual_model = data.get("model", current_model)
+                        if current_model != model:
+                            logger.info(f"Used fallback model {current_model} (primary: {model})")
+                        return {
+                            "message": message_content,
+                            "tool_calls": data["choices"][0]["message"].get("tool_calls"),
+                            "usage": data.get("usage", {}),
+                            "model": actual_model
+                        }
+
+                    # Handle rate limit errors (429)
+                    if response.status_code == 429:
+                        error_data = response.json()
+                        error_message = error_data.get("error", {}).get("message", "")
+                        logger.warning(f"OpenAI rate limit for {current_model} (attempt {attempt + 1}/{max_retries}): {error_message}")
+
+                        # Check if it's a daily limit (RPD) - try fallback model
+                        is_daily_limit = "per day" in error_message.lower() or "rpd" in error_message.lower()
+
+                        if is_daily_limit:
+                            logger.warning(f"Daily rate limit (RPD) reached for {current_model}, trying fallback...")
+                            rate_limited_models.add(current_model)
+                            break  # Break inner loop to try next model
+
+                        # For per-minute limits, parse retry-after and wait
+                        retry_after = 10  # Default 10 seconds
+                        match = re.search(r'try again in (\d+\.?\d*)s', error_message, re.IGNORECASE)
+                        if match:
+                            retry_after = min(float(match.group(1)), 30)  # Cap at 30 seconds
+
+                        # Exponential backoff
+                        wait_time = retry_after * (2 ** attempt)
+                        wait_time = min(wait_time, 60)  # Max 60 seconds
+
+                        if attempt < max_retries - 1:
+                            logger.info(f"Waiting {wait_time:.1f}s before retry...")
+                            await asyncio.sleep(wait_time)
+                            continue
+
+                        # All retries exhausted for this model, try fallback
+                        rate_limited_models.add(current_model)
+                        break
+
+                    # Other errors - don't retry, don't fallback
+                    error_text = response.text
+                    logger.error(f"OpenAI API error: {error_text}")
+                    raise Exception(f"OpenAI API error: {response.status_code}")
+
+            except HTTPException:
+                raise
+            except httpx.TimeoutException:
+                logger.warning(f"OpenAI request timeout (attempt {attempt + 1}/{max_retries})")
+                last_error = "Request timed out"
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+            except Exception as e:
+                logger.error(f"OpenAI call failed: {e}")
+                last_error = str(e)
+                if "rate" not in str(e).lower():
+                    raise
+                rate_limited_models.add(current_model)
+                break
+
+    # All models exhausted
+    if len(rate_limited_models) == len(models_to_try):
+        raise HTTPException(
+            status_code=429,
+            detail="AI service is temporarily at capacity. Please try again in a few minutes."
+        )
+
+    raise Exception(f"OpenAI call failed after trying all models: {last_error}")
 
 
 async def track_token_usage(
