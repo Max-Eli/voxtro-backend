@@ -24,27 +24,79 @@ async def create_customer(customer: CustomerCreate, auth_data: Dict = Depends(ge
     try:
         business_owner_id = auth_data["user_id"]  # The business owner creating the customer
 
-        # Create auth user via Supabase Admin API for customer portal login
-        auth_result = supabase_admin.auth.admin.create_user({
-            "email": customer.email,
-            "password": customer.password,
-            "email_confirm": True,
-            "user_metadata": {
-                "is_customer": True,
-                "full_name": customer.full_name,
-                "created_by_user_id": business_owner_id  # Link back to business owner
-            }
-        })
+        # Check if a customer record already exists with this email
+        existing_customer = supabase_admin.table("customers").select("id").eq(
+            "email", customer.email
+        ).execute()
 
-        customer_user_id = auth_result.user.id
+        if existing_customer.data and len(existing_customer.data) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail="A customer with this email already exists"
+            )
+
+        # Create auth user via Supabase Admin API for customer portal login
+        customer_user_id = None
+        auth_created = True
+        try:
+            auth_result = supabase_admin.auth.admin.create_user({
+                "email": customer.email,
+                "password": customer.password,
+                "email_confirm": True,
+                "user_metadata": {
+                    "is_customer": True,
+                    "full_name": customer.full_name,
+                    "created_by_user_id": business_owner_id
+                }
+            })
+            customer_user_id = auth_result.user.id
+        except Exception as auth_err:
+            # If auth user already exists, find and reuse them
+            if "already been registered" in str(auth_err):
+                logger.info(f"Auth user already exists for {customer.email}, looking up existing user")
+                auth_created = False
+                users_response = supabase_admin.auth.admin.list_users()
+                existing_user = None
+                for u in users_response:
+                    if hasattr(u, 'email') and u.email == customer.email:
+                        existing_user = u
+                        break
+                    elif isinstance(u, list):
+                        for user_item in u:
+                            if hasattr(user_item, 'email') and user_item.email == customer.email:
+                                existing_user = user_item
+                                break
+                        if existing_user:
+                            break
+
+                if existing_user:
+                    customer_user_id = existing_user.id
+                    # Update their metadata to mark as customer
+                    supabase_admin.auth.admin.update_user_by_id(
+                        str(customer_user_id),
+                        {
+                            "user_metadata": {
+                                "is_customer": True,
+                                "full_name": customer.full_name,
+                                "created_by_user_id": business_owner_id
+                            }
+                        }
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Auth user exists but could not be found"
+                    )
+            else:
+                raise
 
         # Create customer profile
         customer_data = {
-            "user_id": customer_user_id,  # Link to auth user for portal login
+            "user_id": str(customer_user_id),
             "email": customer.email,
             "full_name": customer.full_name,
             "company_name": customer.company_name,
-            "created_by_user_id": business_owner_id  # Business owner who created this customer
+            "created_by_user_id": business_owner_id
         }
 
         customer_result = supabase_admin.table("customers").insert(customer_data).execute()
@@ -66,12 +118,14 @@ async def create_customer(customer: CustomerCreate, auth_data: Dict = Depends(ge
                 }).execute()
 
         logger.info(f"Customer created: {customer_id} by user {business_owner_id}" +
-                   (f" with chatbot assignment {customer.chatbot_id}" if customer.chatbot_id else ""))
+                   (f" with chatbot assignment {customer.chatbot_id}" if customer.chatbot_id else "") +
+                   (f" (reused existing auth user)" if not auth_created else ""))
 
         return CustomerCreateResponse(
             customer_id=customer_id,
-            user_id=customer_user_id,
-            email=customer.email
+            user_id=str(customer_user_id),
+            email=customer.email,
+            auth_created=auth_created
         )
 
     except HTTPException:

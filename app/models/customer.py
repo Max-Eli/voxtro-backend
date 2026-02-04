@@ -17,6 +17,7 @@ class CustomerCreateResponse(BaseModel):
     customer_id: str
     user_id: str
     email: str
+    auth_created: bool = True
 
 
 class CustomerLoginLinkRequest(BaseModel):
