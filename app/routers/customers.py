@@ -1,10 +1,9 @@
 """Customer management endpoints"""
 from fastapi import APIRouter, HTTPException, Depends
-from typing import Dict
+from typing import Dict, List
 import logging
 import uuid
-
-from app.models.customer import CustomerCreate, CustomerCreateResponse, SupportTicketCreate
+from app.models.customer import CustomerCreate, CustomerCreateResponse, SupportTicketCreate, ChatbotAssignmentUpdate
 from app.middleware.auth import get_current_user, get_current_customer
 from app.database import supabase_admin
 from app.config import get_settings
@@ -102,23 +101,34 @@ async def create_customer(customer: CustomerCreate, auth_data: Dict = Depends(ge
         customer_result = supabase_admin.table("customers").insert(customer_data).execute()
         customer_id = customer_result.data[0]["id"]
 
-        # Create chatbot assignment if provided (uses separate assignments table)
-        if customer.chatbot_id:
-            # Verify the chatbot belongs to the business owner
-            chatbot_check = supabase_admin.table("chatbots").select("id").eq(
-                "id", customer.chatbot_id
-            ).eq("user_id", business_owner_id).single().execute()
+        # Build list of chatbot IDs to assign (support both single and multiple)
+        all_chatbot_ids = []
+        if customer.chatbot_ids:
+            all_chatbot_ids = customer.chatbot_ids
+        elif customer.chatbot_id:
+            all_chatbot_ids = [customer.chatbot_id]
 
-            if chatbot_check.data:
-                # Create assignment in customer_chatbot_assignments table
-                supabase_admin.table("customer_chatbot_assignments").insert({
-                    "customer_id": customer_id,
-                    "chatbot_id": customer.chatbot_id,
-                    "assigned_by": business_owner_id
-                }).execute()
+        # Create chatbot assignments
+        assigned_chatbots = []
+        for cid in all_chatbot_ids:
+            try:
+                # Verify the chatbot belongs to the business owner
+                chatbot_check = supabase_admin.table("chatbots").select("id").eq(
+                    "id", cid
+                ).eq("user_id", business_owner_id).single().execute()
+
+                if chatbot_check.data:
+                    supabase_admin.table("customer_chatbot_assignments").insert({
+                        "customer_id": customer_id,
+                        "chatbot_id": cid,
+                        "assigned_by": business_owner_id
+                    }).execute()
+                    assigned_chatbots.append(cid)
+            except Exception as assign_err:
+                logger.warning(f"Failed to assign chatbot {cid}: {assign_err}")
 
         logger.info(f"Customer created: {customer_id} by user {business_owner_id}" +
-                   (f" with chatbot assignment {customer.chatbot_id}" if customer.chatbot_id else "") +
+                   (f" with {len(assigned_chatbots)} chatbot assignment(s)" if assigned_chatbots else "") +
                    (f" (reused existing auth user)" if not auth_created else ""))
 
         return CustomerCreateResponse(
@@ -132,6 +142,142 @@ async def create_customer(customer: CustomerCreate, auth_data: Dict = Depends(ge
         raise
     except Exception as e:
         logger.error(f"Customer creation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/{customer_id}")
+async def delete_customer(customer_id: str, auth_data: Dict = Depends(get_current_user)):
+    """
+    Delete a customer, their chatbot assignments, and their Supabase Auth user.
+    Only the creator of the customer can delete them.
+    """
+    try:
+        business_owner_id = auth_data["user_id"]
+
+        # Fetch the customer record and verify ownership
+        customer_result = supabase_admin.table("customers").select(
+            "id, user_id, email, created_by_user_id"
+        ).eq("id", customer_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        customer_data = customer_result.data
+        if customer_data.get("created_by_user_id") != business_owner_id:
+            raise HTTPException(status_code=403, detail="You can only delete customers you created")
+
+        customer_auth_user_id = customer_data.get("user_id")
+
+        # Delete chatbot assignments (also cascade-deleted, but explicit is safer)
+        supabase_admin.table("customer_chatbot_assignments").delete().eq(
+            "customer_id", customer_id
+        ).execute()
+
+        # Delete any assistant assignments
+        try:
+            supabase_admin.table("customer_assistant_assignments").delete().eq(
+                "customer_id", customer_id
+            ).execute()
+        except Exception:
+            pass  # Table may not exist
+
+        # Delete any whatsapp agent assignments
+        try:
+            supabase_admin.table("customer_whatsapp_agent_assignments").delete().eq(
+                "customer_id", customer_id
+            ).execute()
+        except Exception:
+            pass  # Table may not exist
+
+        # Delete portal permissions
+        try:
+            supabase_admin.table("customer_portal_permissions").delete().eq(
+                "customer_id", customer_id
+            ).execute()
+        except Exception:
+            pass  # Table may not exist
+
+        # Delete the customer record
+        supabase_admin.table("customers").delete().eq("id", customer_id).execute()
+
+        # Delete the Supabase Auth user so the email can be reused
+        if customer_auth_user_id:
+            try:
+                supabase_admin.auth.admin.delete_user(str(customer_auth_user_id))
+                logger.info(f"Deleted auth user {customer_auth_user_id} for customer {customer_id}")
+            except Exception as auth_err:
+                logger.warning(f"Failed to delete auth user {customer_auth_user_id}: {auth_err}")
+
+        logger.info(f"Customer {customer_id} deleted by user {business_owner_id}")
+        return {"success": True, "message": "Customer deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Customer deletion error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{customer_id}/chatbots")
+async def update_customer_chatbots(
+    customer_id: str,
+    assignment: ChatbotAssignmentUpdate,
+    auth_data: Dict = Depends(get_current_user)
+):
+    """
+    Update chatbot assignments for a customer.
+    Replaces all current assignments with the provided list.
+    """
+    try:
+        business_owner_id = auth_data["user_id"]
+
+        # Verify customer exists and belongs to this user
+        customer_result = supabase_admin.table("customers").select(
+            "id, created_by_user_id"
+        ).eq("id", customer_id).single().execute()
+
+        if not customer_result.data:
+            raise HTTPException(status_code=404, detail="Customer not found")
+
+        if customer_result.data.get("created_by_user_id") != business_owner_id:
+            raise HTTPException(status_code=403, detail="You can only manage customers you created")
+
+        # Verify all chatbots belong to the business owner
+        if assignment.chatbot_ids:
+            chatbots_result = supabase_admin.table("chatbots").select("id").eq(
+                "user_id", business_owner_id
+            ).in_("id", assignment.chatbot_ids).execute()
+
+            valid_ids = {c["id"] for c in (chatbots_result.data or [])}
+            invalid_ids = set(assignment.chatbot_ids) - valid_ids
+            if invalid_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Some chatbots are not valid or not owned by you"
+                )
+
+        # Remove all existing chatbot assignments for this customer
+        supabase_admin.table("customer_chatbot_assignments").delete().eq(
+            "customer_id", customer_id
+        ).execute()
+
+        # Create new assignments
+        assigned = []
+        for cid in assignment.chatbot_ids:
+            supabase_admin.table("customer_chatbot_assignments").insert({
+                "customer_id": customer_id,
+                "chatbot_id": cid,
+                "assigned_by": business_owner_id
+            }).execute()
+            assigned.append(cid)
+
+        logger.info(f"Updated chatbot assignments for customer {customer_id}: {assigned}")
+        return {"success": True, "assigned_chatbots": assigned}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Chatbot assignment update error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

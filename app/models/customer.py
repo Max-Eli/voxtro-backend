@@ -1,6 +1,6 @@
 """Customer management Pydantic models"""
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional, List
 
 
 class CustomerCreate(BaseModel):
@@ -9,7 +9,13 @@ class CustomerCreate(BaseModel):
     password: str = Field(..., min_length=6)
     full_name: str
     company_name: Optional[str] = None
-    chatbot_id: Optional[str] = None  # Link customer to specific chatbot/agent
+    chatbot_id: Optional[str] = None  # Single chatbot (backward compat)
+    chatbot_ids: Optional[List[str]] = None  # Multiple chatbots
+
+
+class ChatbotAssignmentUpdate(BaseModel):
+    """Update chatbot assignments for a customer"""
+    chatbot_ids: List[str]
 
 
 class CustomerCreateResponse(BaseModel):
