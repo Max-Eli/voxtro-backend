@@ -1616,6 +1616,8 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
         assistant_ids = [a["assistant_id"] for a in assignments.data]
         total_synced = 0
 
+        logger.info(f"[SYNC] Starting voice call sync for customer {customer_id}, assistants: {assistant_ids}")
+
         for assistant_id in assistant_ids:
             try:
                 # Get the assistant's owner user_id and org_id
@@ -1625,38 +1627,47 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                 ).eq("id", assistant_id).single().execute()
 
                 if not assistant_result.data:
+                    logger.warning(f"[SYNC] Assistant {assistant_id} not found in DB, skipping")
                     continue
 
                 owner_user_id = assistant_result.data["user_id"]
                 assistant_org_id = assistant_result.data.get("org_id")
                 # The assistant_id IS the VAPI assistant ID
                 vapi_assistant_id = assistant_id
+                logger.info(f"[SYNC] Assistant {assistant_id}: owner={owner_user_id}, org_id={assistant_org_id}")
 
                 # Get owner's VAPI connection that matches the assistant's org
                 # Each VAPI org has its own API key - using the wrong key returns no data
-                conn_query = supabase_admin.table("voice_connections").select(
-                    "api_key"
-                ).eq("user_id", owner_user_id)
-
+                # IMPORTANT: Create fresh queries each time to avoid query builder mutation issues
+                conn_result = None
                 if assistant_org_id:
                     # First try to find a connection matching the assistant's org
-                    conn_result = conn_query.eq("org_id", assistant_org_id).execute()
+                    conn_result = supabase_admin.table("voice_connections").select(
+                        "api_key"
+                    ).eq("user_id", owner_user_id).eq("org_id", assistant_org_id).execute()
+                    logger.info(f"[SYNC] Org-matched connection query: found {len(conn_result.data) if conn_result.data else 0} connections")
                     if not conn_result.data:
                         # Fallback: try any active connection
                         conn_result = supabase_admin.table("voice_connections").select(
                             "api_key"
                         ).eq("user_id", owner_user_id).eq("is_active", True).execute()
+                        logger.info(f"[SYNC] Fallback active connection query: found {len(conn_result.data) if conn_result.data else 0} connections")
                 else:
                     # No org_id on assistant, use any active connection
-                    conn_result = conn_query.eq("is_active", True).execute()
+                    conn_result = supabase_admin.table("voice_connections").select(
+                        "api_key"
+                    ).eq("user_id", owner_user_id).eq("is_active", True).execute()
+                    logger.info(f"[SYNC] No org_id, active connection query: found {len(conn_result.data) if conn_result.data else 0} connections")
 
                 if not conn_result.data:
+                    logger.warning(f"[SYNC] No VAPI connection found for assistant {assistant_id}, skipping")
                     continue
 
                 for conn in conn_result.data:
                     api_key = conn["api_key"]
+                    logger.info(f"[SYNC] Using API key {api_key[:12]}... for assistant {assistant_id}")
 
-                    async with httpx.AsyncClient(timeout=60.0) as client:
+                    async with httpx.AsyncClient(timeout=120.0) as client:
                         # Fetch calls from VAPI - use high limit to get all historical calls
                         params = {"limit": 1000}
                         if vapi_assistant_id:
@@ -1668,12 +1679,17 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                             params=params
                         )
 
+                        logger.info(f"[SYNC] VAPI /call response: status={calls_response.status_code}, size={len(calls_response.content)} bytes")
+
                         if calls_response.status_code != 200:
+                            logger.warning(f"[SYNC] VAPI returned {calls_response.status_code}: {calls_response.text[:200]}")
                             continue
 
                         calls = calls_response.json()
                         if isinstance(calls, dict):
                             calls = calls.get("calls", []) or calls.get("data", [])
+
+                        logger.info(f"[SYNC] VAPI returned {len(calls)} calls for assistant {assistant_id}")
 
                         for call in calls:
                             call_id = call.get("id")
@@ -1703,6 +1719,8 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                 if existing.data and not needs_summary and not needs_duration and not needs_transcripts:
                                     continue  # Already synced with summary, duration, and transcripts
 
+                                logger.info(f"[SYNC] Processing call {call_id}: new={is_new_call}, needs_summary={needs_summary}, needs_duration={needs_duration}, needs_transcripts={needs_transcripts}")
+
                                 # Get call details
                                 call_detail_response = await client.get(
                                     f"https://api.vapi.ai/call/{call_id}",
@@ -1710,6 +1728,7 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                 )
 
                                 if call_detail_response.status_code != 200:
+                                    logger.warning(f"[SYNC] Call detail {call_id} returned {call_detail_response.status_code}")
                                     continue
 
                                 call_detail = call_detail_response.json()
@@ -1759,7 +1778,7 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                     "id": call_id,
                                     "assistant_id": assistant_id,
                                     "customer_id": customer_id,
-                                    "phone_number": call_detail.get("customer", {}).get("number"),
+                                    "phone_number": (call_detail.get("customer") or {}).get("number"),
                                     "status": call_detail.get("status", "completed"),
                                     "started_at": call_detail.get("startedAt"),
                                     "ended_at": call_detail.get("endedAt"),
@@ -1769,6 +1788,7 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                 supabase_admin.table("voice_assistant_calls").upsert(
                                     call_data, on_conflict="id"
                                 ).execute()
+                                logger.info(f"[SYNC] Upserted call {call_id}, started_at={call_data.get('started_at')}, duration={duration}")
 
                                 # Insert transcript messages from VAPI if available
                                 messages = artifact.get("messages", []) or call_detail.get("messages", [])
@@ -1897,13 +1917,14 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
 
                             except Exception as call_error:
                                 # Log the error but continue processing other calls
-                                logger.warning(f"Error processing call {call_id}: {call_error}")
+                                logger.warning(f"[SYNC] Error processing call {call_id}: {call_error}", exc_info=True)
                                 continue
 
             except Exception as e:
-                logger.warning(f"Error syncing assistant {assistant_id}: {e}")
+                logger.warning(f"[SYNC] Error syncing assistant {assistant_id}: {e}", exc_info=True)
                 continue
 
+        logger.info(f"[SYNC] Completed sync for customer {customer_id}: synced {total_synced} calls")
         return {
             "success": True,
             "synced": total_synced,
