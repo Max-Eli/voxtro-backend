@@ -1754,6 +1754,58 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                     except Exception:
                                         pass
 
+                                # Extract VAPI analysis data (summary, sentiment, structured data)
+                                vapi_analysis = call_detail.get("analysis", {}) or {}
+                                vapi_summary = vapi_analysis.get("summary") or call_detail.get("summary")
+                                vapi_structured = vapi_analysis.get("structuredData")
+                                vapi_success = vapi_analysis.get("successEvaluation")
+
+                                # Determine sentiment from VAPI success evaluation
+                                sentiment = None
+                                if vapi_success is True or vapi_success == "true":
+                                    sentiment = "positive"
+                                elif vapi_success is False or vapi_success == "false":
+                                    sentiment = "negative"
+                                elif vapi_summary:
+                                    sentiment = "neutral"
+
+                                # Extract lead info and key points from structured data
+                                lead_info = None
+                                key_points = None
+                                call_outcome = None
+                                topics_discussed = None
+                                if vapi_structured:
+                                    # Lead info from caller details
+                                    cd = vapi_structured.get("caller_details", {})
+                                    if cd:
+                                        li = {}
+                                        for field, key in [("full_name", "name"), ("phone_number", "phone"), ("email_address", "email")]:
+                                            val = cd.get(field, "")
+                                            if val and val not in ["Not provided", "Not specified", "Unknown"]:
+                                                li[key] = val
+                                        if li:
+                                            lead_info = li
+
+                                    # Key points
+                                    kp = []
+                                    intent = vapi_structured.get("caller_intent", "")
+                                    if intent:
+                                        kp.append(f"Caller intent: {intent}")
+                                        topics_discussed = [intent]
+                                        intent_lower = intent.lower()
+                                        if "booking" in intent_lower or "quote" in intent_lower:
+                                            call_outcome = "lead"
+                                        elif "existing" in intent_lower or "payment" in intent_lower:
+                                            call_outcome = "existing_customer"
+                                        elif "inquiry" in intent_lower or "question" in intent_lower:
+                                            call_outcome = "inquiry"
+                                        else:
+                                            call_outcome = "other"
+                                    if lead_info and lead_info.get("name"):
+                                        kp.append(f"Caller: {lead_info['name']}")
+                                    if kp:
+                                        key_points = kp
+
                                 # Upsert call record (only columns that exist in voice_assistant_calls table)
                                 call_data = {
                                     "id": call_id,
@@ -1765,6 +1817,19 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                     "ended_at": call_detail.get("endedAt"),
                                     "duration_seconds": duration,
                                 }
+                                # Add analysis fields if available from VAPI
+                                if vapi_summary:
+                                    call_data["summary"] = vapi_summary
+                                if sentiment:
+                                    call_data["sentiment"] = sentiment
+                                if key_points:
+                                    call_data["key_points"] = key_points
+                                if lead_info:
+                                    call_data["lead_info"] = lead_info
+                                if call_outcome:
+                                    call_data["call_outcome"] = call_outcome
+                                if topics_discussed:
+                                    call_data["topics_discussed"] = topics_discussed
 
                                 supabase_admin.table("voice_assistant_calls").upsert(
                                     call_data, on_conflict="id"
@@ -1824,62 +1889,7 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                                 transcripts_to_insert
                                             ).execute()
                                             transcripts_inserted = True
-
-                                            # Generate AI summary for the call (safe - won't break sync if fails)
-                                            try:
-                                                transcript_text = "\n".join([
-                                                    f"{t['role']}: {t['content']}" for t in transcripts_to_insert
-                                                ])
-                                                if transcript_text.strip():
-                                                    from app.routers.webhooks import generate_call_summary
-                                                    summary = await generate_call_summary(call_id, transcript_text, owner_user_id)
-                                                    if summary:
-                                                        supabase_admin.table("voice_assistant_calls").update({
-                                                            "summary": summary.get("summary"),
-                                                            "key_points": summary.get("key_points"),
-                                                            "action_items": summary.get("action_items"),
-                                                            "sentiment": summary.get("sentiment"),
-                                                            "sentiment_notes": summary.get("sentiment_notes"),
-                                                            "call_outcome": summary.get("call_outcome"),
-                                                            "topics_discussed": summary.get("topics_discussed"),
-                                                            "lead_info": summary.get("lead_info")
-                                                        }).eq("id", call_id).execute()
-                                                        logger.info(f"Generated AI summary for call {call_id}")
-                                            except Exception as ai_error:
-                                                logger.warning(f"AI summary generation failed for call {call_id}: {ai_error}")
-                                                # Don't fail the sync - just skip AI summary
-
-                                # Generate AI summary from existing transcripts if needed
-                                # This runs when: 1) VAPI didn't return messages, OR 2) transcripts exist but no summary
-                                if needs_summary and not transcripts_inserted:
-                                    try:
-                                        existing_transcripts = supabase_admin.table("voice_assistant_transcripts").select(
-                                            "role, content"
-                                        ).eq("call_id", call_id).order("timestamp").execute()
-
-                                        if existing_transcripts.data:
-                                            transcript_text = "\n".join([
-                                                f"{t['role']}: {t['content']}" for t in existing_transcripts.data
-                                            ])
-                                            if transcript_text.strip():
-                                                from app.routers.webhooks import generate_call_summary
-                                                summary = await generate_call_summary(call_id, transcript_text, owner_user_id)
-                                                if summary:
-                                                    supabase_admin.table("voice_assistant_calls").update({
-                                                        "summary": summary.get("summary"),
-                                                        "key_points": summary.get("key_points"),
-                                                        "action_items": summary.get("action_items"),
-                                                        "sentiment": summary.get("sentiment"),
-                                                        "sentiment_notes": summary.get("sentiment_notes"),
-                                                        "call_outcome": summary.get("call_outcome"),
-                                                        "topics_discussed": summary.get("topics_discussed"),
-                                                        "lead_info": summary.get("lead_info")
-                                                    }).eq("id", call_id).execute()
-                                                    logger.info(f"Generated AI summary for existing call {call_id}")
-                                        else:
-                                            logger.debug(f"No transcripts found in DB for call {call_id} - cannot generate summary")
-                                    except Exception as ai_error:
-                                        logger.warning(f"AI summary generation failed for existing call {call_id}: {ai_error}")
+                                            logger.info(f"[SYNC] Inserted {len(transcripts_to_insert)} transcript messages for call {call_id}")
 
                                 # Insert recording if available
                                 recording_url = artifact.get("recordingUrl") or call_detail.get("recordingUrl")
