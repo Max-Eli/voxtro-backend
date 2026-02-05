@@ -1744,6 +1744,7 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
                                 call_data = {
                                     "id": call_id,
                                     "assistant_id": assistant_id,
+                                    "customer_id": customer_id,
                                     "phone_number": call_detail.get("customer", {}).get("number"),
                                     "status": call_detail.get("status", "completed"),
                                     "started_at": call_detail.get("startedAt"),
