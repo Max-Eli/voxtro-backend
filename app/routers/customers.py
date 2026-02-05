@@ -1721,36 +1721,17 @@ async def sync_customer_voice_calls(auth_data: Dict = Depends(get_current_custom
 
                                 logger.info(f"[SYNC] Processing call {call_id}: new={is_new_call}, needs_summary={needs_summary}, needs_duration={needs_duration}, needs_transcripts={needs_transcripts}")
 
-                                # Get call details
-                                call_detail_response = await client.get(
-                                    f"https://api.vapi.ai/call/{call_id}",
-                                    headers={"Authorization": f"Bearer {api_key}"}
-                                )
-
-                                if call_detail_response.status_code != 200:
-                                    logger.warning(f"[SYNC] Call detail {call_id} returned {call_detail_response.status_code}")
-                                    continue
-
-                                call_detail = call_detail_response.json()
+                                # Use call data from list response directly (contains full data including artifacts)
+                                # This avoids making N extra API requests for individual call details
+                                call_detail = call
 
                                 # Skip calls without startedAt - they are incomplete/failed calls
                                 # and will cause NOT NULL constraint violations
                                 if not call_detail.get("startedAt"):
-                                    logger.debug(f"Skipping call {call_id} - no startedAt timestamp (incomplete call)")
+                                    logger.info(f"[SYNC] Skipping call {call_id} - no startedAt timestamp (incomplete call)")
                                     continue
 
                                 artifact = call_detail.get("artifact", {}) or {}
-
-                                # Debug: log available fields to understand VAPI response structure
-                                logger.debug(f"Call {call_id} detail keys: {list(call_detail.keys())}")
-                                logger.debug(f"Call {call_id} artifact keys: {list(artifact.keys())}")
-
-                                # Check for transcript in different locations (VAPI may store it differently)
-                                if not artifact.get("messages") and not call_detail.get("messages"):
-                                    # Look for transcript field that might have the conversation
-                                    transcript_field = artifact.get("transcript") or call_detail.get("transcript")
-                                    if transcript_field:
-                                        logger.info(f"Call {call_id} has transcript field (length: {len(str(transcript_field))})")
 
                                 # Extract duration - try multiple field names (VAPI uses different names)
                                 duration = (
