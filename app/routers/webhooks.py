@@ -5,7 +5,7 @@ from typing import Dict, Any, Optional
 
 from app.models.voice import VapiWebhookPayload
 from app.database import supabase_admin
-from app.services.ai_service import call_openai, get_user_openai_key
+from app.services.ai_service import call_mistral
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -13,20 +13,17 @@ router = APIRouter()
 
 async def generate_call_summary(call_id: str, transcript_text: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    Generate AI summary of a voice call transcript
-    
+    Generate AI summary of a voice call transcript using Mistral
+
     Args:
         call_id: The call ID
         transcript_text: Full transcript text
-        user_id: User ID to get OpenAI key
-        
+        user_id: User ID (kept for interface compatibility)
+
     Returns:
         Summary dict with summary, key_points, action_items, sentiment, lead_info
     """
     try:
-        # Get user's OpenAI API key
-        openai_api_key = await get_user_openai_key(user_id, allow_fallback=True)
-        
         summary_prompt = f"""Analyze the following voice call transcript and provide a comprehensive summary.
 
 TRANSCRIPT:
@@ -53,10 +50,8 @@ Provide your analysis in the following JSON format:
 
 Respond ONLY with valid JSON, no additional text."""
 
-        response = await call_openai(
+        response = await call_mistral(
             messages=[{"role": "user", "content": summary_prompt}],
-            api_key=openai_api_key,
-            model="gpt-4o-mini",
             temperature=0.3,
             max_tokens=1000
         )

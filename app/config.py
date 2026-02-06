@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     openai_api_key: str
     resend_api_key: str
 
+    # Mistral API (used for AI summaries, lead extraction - cheaper than OpenAI)
+    mistral_api_key: str = ""
+
     # Application
     environment: str = "development"
     cors_origins: list[str] = ["*"]

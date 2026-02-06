@@ -320,6 +320,80 @@ async def call_openai(
     raise Exception(f"OpenAI call failed after trying all models: {last_error}")
 
 
+async def call_mistral(
+    messages: List[Dict[str, str]],
+    model: str = "mistral-small-latest",
+    temperature: float = 0.3,
+    max_tokens: int = 1000,
+    max_retries: int = 3
+) -> Dict[str, Any]:
+    """
+    Call Mistral API for AI summaries and lead extraction.
+    Uses server-side API key (not per-user).
+    Mistral API is OpenAI-compatible (same request/response format).
+    """
+    import asyncio
+
+    mistral_key = settings.mistral_api_key
+    if not mistral_key:
+        raise Exception("MISTRAL_API_KEY not configured")
+
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens
+                }
+
+                response = await client.post(
+                    "https://api.mistral.ai/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {mistral_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload
+                )
+
+                if response.status_code == 200:
+                    data = response.json()
+                    message_content = data["choices"][0]["message"].get("content")
+                    return {
+                        "message": message_content,
+                        "usage": data.get("usage", {}),
+                        "model": data.get("model", model)
+                    }
+
+                if response.status_code == 429:
+                    logger.warning(f"Mistral rate limit (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** (attempt + 1)
+                        await asyncio.sleep(wait_time)
+                        continue
+
+                error_text = response.text
+                logger.error(f"Mistral API error: {response.status_code} - {error_text}")
+                raise Exception(f"Mistral API error: {response.status_code}")
+
+        except httpx.TimeoutException:
+            logger.warning(f"Mistral request timeout (attempt {attempt + 1}/{max_retries})")
+            last_error = "Request timed out"
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2 ** attempt)
+                continue
+        except Exception as e:
+            if "rate" in str(e).lower() and attempt < max_retries - 1:
+                await asyncio.sleep(2 ** (attempt + 1))
+                continue
+            raise
+
+    raise Exception(f"Mistral call failed after {max_retries} attempts: {last_error}")
+
+
 async def track_token_usage(
     chatbot_id: str,
     conversation_id: Optional[str],
@@ -395,13 +469,13 @@ async def check_token_limits(chatbot_id: str, daily_limit: int, monthly_limit: i
         return None  # Don't block on error
 
 
-async def extract_lead_info(messages: List[Dict[str, str]], api_key: str) -> Optional[Dict[str, Any]]:
+async def extract_lead_info(messages: List[Dict[str, str]], api_key: str = "") -> Optional[Dict[str, Any]]:
     """
-    Extract lead information from conversation messages using OpenAI
+    Extract lead information from conversation messages using Mistral
 
     Args:
         messages: List of conversation messages with role and content
-        api_key: User's OpenAI API key
+        api_key: Unused (kept for backwards compatibility) - uses server-side Mistral key
 
     Returns:
         Dict with extracted lead info or None if no lead detected
@@ -433,10 +507,8 @@ async def extract_lead_info(messages: List[Dict[str, str]], api_key: str) -> Opt
         Respond ONLY with valid JSON, no additional text.
         """
 
-        response = await call_openai(
+        response = await call_mistral(
             messages=[{"role": "user", "content": extraction_prompt}],
-            api_key=api_key,
-            model="gpt-4o-mini",
             temperature=0.3,
             max_tokens=500
         )

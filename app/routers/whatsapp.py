@@ -11,7 +11,7 @@ from app.models.whatsapp import WhatsAppAgentSyncResponse, WhatsAppAgentUpdate, 
 from app.middleware.auth import get_current_user
 from app.database import supabase_admin
 from app.config import get_settings
-from app.services.ai_service import call_openai, get_user_openai_key
+from app.services.ai_service import call_mistral
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -20,20 +20,17 @@ settings = get_settings()
 
 async def generate_whatsapp_summary(conversation_id: str, transcript_text: str, user_id: str) -> Optional[Dict[str, Any]]:
     """
-    Generate AI summary of a WhatsApp conversation transcript
+    Generate AI summary of a WhatsApp conversation transcript using Mistral
 
     Args:
         conversation_id: The conversation ID
         transcript_text: Full transcript text
-        user_id: User ID to get OpenAI key
+        user_id: User ID (kept for interface compatibility)
 
     Returns:
         Summary dict with summary, key_points, action_items, sentiment, lead_info
     """
     try:
-        # Get user's OpenAI API key
-        openai_api_key = await get_user_openai_key(user_id, allow_fallback=True)
-
         summary_prompt = f"""Analyze the following WhatsApp conversation transcript and provide a comprehensive summary.
 
 TRANSCRIPT:
@@ -60,10 +57,8 @@ Provide your analysis in the following JSON format:
 
 Respond ONLY with valid JSON, no additional text."""
 
-        response = await call_openai(
+        response = await call_mistral(
             messages=[{"role": "user", "content": summary_prompt}],
-            api_key=openai_api_key,
-            model="gpt-4o-mini",
             temperature=0.3,
             max_tokens=1000
         )

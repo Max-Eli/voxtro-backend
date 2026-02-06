@@ -5,7 +5,7 @@ import logging
 
 from app.middleware.auth import get_current_user
 from app.database import supabase_admin
-from app.services.ai_service import get_user_openai_key, extract_lead_info
+from app.services.ai_service import extract_lead_info
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -37,9 +37,6 @@ async def extract_leads(conversation_id: str, auth_data: Dict = Depends(get_curr
 
         chatbot_name = chatbot_result.data.get("name")
 
-        # Get user's OpenAI API key
-        openai_api_key = await get_user_openai_key(user_id)
-
         # Get conversation messages
         messages_result = supabase_admin.table("messages").select(
             "content, role"
@@ -48,8 +45,8 @@ async def extract_leads(conversation_id: str, auth_data: Dict = Depends(get_curr
         if not messages_result.data:
             return {"success": True, "leads_found": 0, "message": "No messages in conversation"}
 
-        # Use AI to extract lead information
-        lead_info = await extract_lead_info(messages_result.data, openai_api_key)
+        # Use AI to extract lead information (uses Mistral server-side key)
+        lead_info = await extract_lead_info(messages_result.data)
 
         if not lead_info:
             return {"success": True, "leads_found": 0, "message": "No lead information found"}
@@ -99,9 +96,6 @@ async def extract_leads_batch(
     try:
         user_id = auth_data["user_id"]
 
-        # Get user's OpenAI API key
-        openai_api_key = await get_user_openai_key(user_id)
-
         # Build query for user's chatbots with names
         if chatbot_id:
             # Verify chatbot belongs to user and get name
@@ -142,8 +136,8 @@ async def extract_leads_batch(
             if not messages_result.data:
                 continue
 
-            # Use AI to extract lead information
-            lead_info = await extract_lead_info(messages_result.data, openai_api_key)
+            # Use AI to extract lead information (uses Mistral server-side key)
+            lead_info = await extract_lead_info(messages_result.data)
 
             if lead_info:
                 # Save lead with correct schema

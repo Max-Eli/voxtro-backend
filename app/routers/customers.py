@@ -347,10 +347,6 @@ async def extract_leads_from_conversations(auth_data: Dict = Depends(get_current
     try:
         user_id = auth_data["user_id"]
 
-        # Get user's OpenAI API key
-        from app.services.ai_service import get_user_openai_key
-        openai_api_key = await get_user_openai_key(user_id)
-
         # Get user's chatbots with names
         chatbots_result = supabase_admin.table("chatbots").select("id, name").eq(
             "user_id", user_id
@@ -375,10 +371,10 @@ async def extract_leads_from_conversations(auth_data: Dict = Depends(get_current
                 "content, role"
             ).eq("conversation_id", conv["id"]).execute()
 
-            # Use OpenAI to extract lead information with user's API key
+            # Use Mistral to extract lead information (server-side key)
             from app.services.ai_service import extract_lead_info
 
-            lead_info = await extract_lead_info(messages_result.data, openai_api_key)
+            lead_info = await extract_lead_info(messages_result.data)
 
             if lead_info:
                 # Save lead with correct schema
