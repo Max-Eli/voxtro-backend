@@ -31,39 +31,45 @@ async def generate_whatsapp_summary(conversation_id: str, transcript_text: str, 
         Summary dict with summary, key_points, action_items, sentiment, lead_info
     """
     try:
-        summary_prompt = f"""Analyze the following WhatsApp conversation transcript and provide a comprehensive summary.
+        import re
 
-TRANSCRIPT:
-{transcript_text}
-
-Provide your analysis in the following JSON format:
-{{
-    "summary": "Brief 2-3 sentence summary of the conversation",
-    "key_points": ["Key point 1", "Key point 2", ...],
-    "action_items": ["Action item 1", "Action item 2", ...],
-    "sentiment": "positive/neutral/negative",
-    "sentiment_notes": "Brief explanation of user sentiment",
-    "lead_info": {{
-        "name": "User name if mentioned",
-        "email": "Email if mentioned",
-        "phone": "Phone if mentioned",
-        "company": "Company if mentioned",
-        "interest_level": "high/medium/low/unknown",
-        "notes": "Any relevant notes about the potential lead"
-    }},
-    "conversation_outcome": "resolved/follow_up_needed/escalated/information_provided/other",
-    "topics_discussed": ["Topic 1", "Topic 2", ...]
-}}
-
-Respond ONLY with valid JSON, no additional text."""
-
-        response = await call_mistral(
-            messages=[{"role": "user", "content": summary_prompt}],
-            temperature=0.3,
-            max_tokens=1000
+        system_message = (
+            "You are a JSON API that analyzes WhatsApp conversation transcripts. "
+            "You MUST respond with ONLY a valid JSON object — no markdown, no explanation, no extra text. "
+            "Every field must be populated. Use \"unknown\" or empty arrays if information is not available."
         )
 
-        summary_data = json.loads(response["message"])
+        user_prompt = f"""Analyze this WhatsApp conversation transcript and return a JSON object with these exact fields:
+
+- "summary": A brief 2-3 sentence summary of what happened in the conversation.
+- "key_points": An array of the key details discussed (e.g. ["Customer asked about delivery", "Agent confirmed shipping date"]).
+- "action_items": An array of follow-up actions needed (e.g. ["Send tracking number"]).
+- "sentiment": One of "positive", "neutral", or "negative".
+- "sentiment_notes": One sentence explaining the user's tone/mood.
+- "lead_info": An object with "name", "email", "phone", "company", "interest_level" (high/medium/low/unknown), and "notes".
+- "conversation_outcome": One of "resolved", "follow_up_needed", "escalated", "information_provided", or "other".
+- "topics_discussed": An array of short topic labels (e.g. ["Delivery status", "Return policy"]).
+
+TRANSCRIPT:
+{transcript_text}"""
+
+        response = await call_mistral(
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1000,
+            response_format={"type": "json_object"}
+        )
+
+        raw = response["message"].strip()
+        # Strip markdown code fences if Mistral wraps the JSON
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+
+        summary_data = json.loads(raw)
         return summary_data
 
     except Exception as e:

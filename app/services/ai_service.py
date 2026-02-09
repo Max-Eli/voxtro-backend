@@ -325,12 +325,16 @@ async def call_mistral(
     model: str = "mistral-small-latest",
     temperature: float = 0.3,
     max_tokens: int = 1000,
-    max_retries: int = 3
+    max_retries: int = 3,
+    response_format: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
     """
     Call Mistral API for AI summaries and lead extraction.
     Uses server-side API key (not per-user).
     Mistral API is OpenAI-compatible (same request/response format).
+
+    Args:
+        response_format: Optional, e.g. {"type": "json_object"} to enforce JSON output
     """
     import asyncio
 
@@ -349,6 +353,8 @@ async def call_mistral(
                     "temperature": temperature,
                     "max_tokens": max_tokens
                 }
+                if response_format:
+                    payload["response_format"] = response_format
 
                 response = await client.post(
                     "https://api.mistral.ai/v1/chat/completions",

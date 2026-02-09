@@ -1107,3 +1107,121 @@ async def sync_everything(
     except Exception as e:
         logger.error(f"Sync everything error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/regenerate-summaries")
+async def regenerate_malformed_summaries(
+    auth_data: Dict = Depends(get_current_user),
+    limit: int = Query(100, description="Max entries to regenerate per type"),
+    dry_run: bool = Query(False, description="If true, only count malformed entries without regenerating")
+):
+    """
+    Regenerate AI summaries for entries where Mistral produced a malformed blob
+    (summary exists but key_points is null — indicating everything was dumped into summary).
+    This re-runs the analysis with the improved prompt.
+    """
+    try:
+        from app.routers.webhooks import generate_call_summary
+        from app.routers.whatsapp import generate_whatsapp_summary
+
+        user_id = auth_data["user_id"]
+        results = {
+            "voice_calls": {"found": 0, "regenerated": 0, "errors": 0},
+            "whatsapp": {"found": 0, "regenerated": 0, "errors": 0}
+        }
+
+        # --- Voice Calls: find entries with summary but no key_points ---
+        voice_calls = supabase_admin.table("voice_assistant_calls").select(
+            "id, assistant_id, summary"
+        ).not_.is_("summary", "null").is_("key_points", "null").limit(limit).execute()
+
+        results["voice_calls"]["found"] = len(voice_calls.data or [])
+
+        if not dry_run:
+            for call in (voice_calls.data or []):
+                try:
+                    # Get transcript for this call
+                    transcripts = supabase_admin.table("voice_assistant_transcripts").select(
+                        "role, content"
+                    ).eq("call_id", call["id"]).order("timestamp").execute()
+
+                    if not transcripts.data:
+                        continue
+
+                    transcript_text = "\n".join(
+                        f"{t['role'].title()}: {t['content']}" for t in transcripts.data
+                    )
+
+                    summary = await generate_call_summary(call["id"], transcript_text, user_id)
+
+                    if summary and summary.get("key_points"):
+                        supabase_admin.table("voice_assistant_calls").update({
+                            "summary": summary.get("summary"),
+                            "key_points": summary.get("key_points"),
+                            "action_items": summary.get("action_items"),
+                            "sentiment": summary.get("sentiment"),
+                            "sentiment_notes": summary.get("sentiment_notes"),
+                            "call_outcome": summary.get("call_outcome"),
+                            "topics_discussed": summary.get("topics_discussed"),
+                            "lead_info": summary.get("lead_info")
+                        }).eq("id", call["id"]).execute()
+                        results["voice_calls"]["regenerated"] += 1
+                    else:
+                        results["voice_calls"]["errors"] += 1
+
+                except Exception as e:
+                    logger.error(f"Error regenerating voice call {call['id']}: {e}")
+                    results["voice_calls"]["errors"] += 1
+
+        # --- WhatsApp Conversations: find entries with summary but no key_points ---
+        whatsapp_convs = supabase_admin.table("whatsapp_conversations").select(
+            "id, agent_id, summary"
+        ).not_.is_("summary", "null").is_("key_points", "null").limit(limit).execute()
+
+        results["whatsapp"]["found"] = len(whatsapp_convs.data or [])
+
+        if not dry_run:
+            for conv in (whatsapp_convs.data or []):
+                try:
+                    # Get messages for this conversation
+                    messages = supabase_admin.table("whatsapp_messages").select(
+                        "role, content"
+                    ).eq("conversation_id", conv["id"]).order("timestamp").execute()
+
+                    if not messages.data:
+                        continue
+
+                    transcript_text = "\n".join(
+                        f"{m['role'].title()}: {m['content']}" for m in messages.data
+                    )
+
+                    summary = await generate_whatsapp_summary(conv["id"], transcript_text, user_id)
+
+                    if summary and summary.get("key_points"):
+                        supabase_admin.table("whatsapp_conversations").update({
+                            "summary": summary.get("summary"),
+                            "key_points": summary.get("key_points"),
+                            "action_items": summary.get("action_items"),
+                            "sentiment": summary.get("sentiment"),
+                            "sentiment_notes": summary.get("sentiment_notes"),
+                            "conversation_outcome": summary.get("conversation_outcome"),
+                            "topics_discussed": summary.get("topics_discussed"),
+                            "lead_info": summary.get("lead_info")
+                        }).eq("id", conv["id"]).execute()
+                        results["whatsapp"]["regenerated"] += 1
+                    else:
+                        results["whatsapp"]["errors"] += 1
+
+                except Exception as e:
+                    logger.error(f"Error regenerating WhatsApp conv {conv['id']}: {e}")
+                    results["whatsapp"]["errors"] += 1
+
+        return {
+            "success": True,
+            "dry_run": dry_run,
+            "results": results
+        }
+
+    except Exception as e:
+        logger.error(f"Regenerate summaries error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

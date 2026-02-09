@@ -24,42 +24,48 @@ async def generate_call_summary(call_id: str, transcript_text: str, user_id: str
         Summary dict with summary, key_points, action_items, sentiment, lead_info
     """
     try:
-        summary_prompt = f"""Analyze the following voice call transcript and provide a comprehensive summary.
+        import json
+        import re
+
+        system_message = (
+            "You are a JSON API that analyzes voice call transcripts. "
+            "You MUST respond with ONLY a valid JSON object — no markdown, no explanation, no extra text. "
+            "Every field must be populated. Use \"unknown\" or empty arrays if information is not available."
+        )
+
+        user_prompt = f"""Analyze this voice call transcript and return a JSON object with these exact fields:
+
+- "summary": A brief 2-3 sentence summary of what happened in the call.
+- "key_points": An array of the key details discussed (e.g. ["Caller asked about pricing", "Agent offered a callback"]).
+- "action_items": An array of follow-up actions needed (e.g. ["Schedule callback for Monday"]).
+- "sentiment": One of "positive", "neutral", or "negative".
+- "sentiment_notes": One sentence explaining the caller's tone/mood.
+- "lead_info": An object with "name", "email", "phone", "company", "interest_level" (high/medium/low/unknown), and "notes".
+- "call_outcome": One of "resolved", "follow_up_needed", "escalated", "information_provided", or "other".
+- "topics_discussed": An array of short topic labels (e.g. ["Account balance", "Payment options"]).
 
 TRANSCRIPT:
-{transcript_text}
-
-Provide your analysis in the following JSON format:
-{{
-    "summary": "Brief 2-3 sentence summary of the call",
-    "key_points": ["Key point 1", "Key point 2", ...],
-    "action_items": ["Action item 1", "Action item 2", ...],
-    "sentiment": "positive/neutral/negative",
-    "sentiment_notes": "Brief explanation of caller sentiment",
-    "lead_info": {{
-        "name": "Caller name if mentioned",
-        "email": "Email if mentioned",
-        "phone": "Phone if mentioned",
-        "company": "Company if mentioned",
-        "interest_level": "high/medium/low/unknown",
-        "notes": "Any relevant notes about the potential lead"
-    }},
-    "call_outcome": "resolved/follow_up_needed/escalated/information_provided/other",
-    "topics_discussed": ["Topic 1", "Topic 2", ...]
-}}
-
-Respond ONLY with valid JSON, no additional text."""
+{transcript_text}"""
 
         response = await call_mistral(
-            messages=[{"role": "user", "content": summary_prompt}],
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_prompt}
+            ],
             temperature=0.3,
-            max_tokens=1000
+            max_tokens=1000,
+            response_format={"type": "json_object"}
         )
-        
-        import json
-        summary_data = json.loads(response["message"])
+
+        raw = response["message"].strip()
+        # Strip markdown code fences if Mistral wraps the JSON
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+
+        summary_data = json.loads(raw)
         return summary_data
-        
+
     except Exception as e:
         logger.error(f"Error generating call summary: {e}")
         return None
