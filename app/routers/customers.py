@@ -716,7 +716,7 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
                                 "conversation_id": call["id"],
                                 "name": lead_info.get("name"),
                                 "email": lead_info.get("email"),
-                                "phone_number": lead_info.get("phone"),
+                                "phone_number": lead_info.get("phone") or call.get("phone_number"),
                                 "additional_data": {
                                     "company": lead_info.get("company"),
                                     "interest_level": lead_info.get("interest_level"),
@@ -758,7 +758,7 @@ async def get_customer_leads(auth_data: Dict = Depends(get_current_customer)):
                                 "conversation_id": conv["id"],
                                 "name": lead_info.get("name"),
                                 "email": lead_info.get("email"),
-                                "phone_number": lead_info.get("phone"),
+                                "phone_number": lead_info.get("phone") or conv.get("phone_number"),
                                 "additional_data": {
                                     "company": lead_info.get("company"),
                                     "interest_level": lead_info.get("interest_level"),
